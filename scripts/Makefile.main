@@ -2,12 +2,13 @@
 
 # Define version number
 MAJOR = 1
-MINOR = 0
+MINOR = 1
 PATCHLEVEL = 0
 FIX =
 
 # Forces bootloader version to 0, comment out or leave empty for release
-PRERELEASE = atentdead0
+#PRERELEASE = atentdead0
+PRERELEASE =  VCPUBETA4
 
 #----------------------------------------------------------------------------
 # WinAVR Makefile Template written by Eric B. Weddington, Joerg Wunsch, et al.
@@ -129,6 +130,10 @@ ifeq ($(CONFIG_RTC_SOFTWARE),y)
   SRC += rtc.c avr/softrtc.c
 endif
 
+ifeq ($(CONFIG_VCPUSUPPORT),y)
+  SRC += vcpu6502emu.c
+endif
+
 # Optimization level, can be [0, 1, 2, 3, s].
 #     0 = turn off optimization. s = optimize for size.
 #     (Note: 3 is not always the best optimization level. See avr-libc FAQ.)
@@ -237,6 +242,7 @@ ASFLAGS = -Wa,-gstabs -I$(OBJDIR) -Isrc -Isrc/$(CONFIG_ARCH)
 #    --cref:    add cross reference to  map file
 LDFLAGS = -Wl,-Map=$(TARGET).map,--cref
 LDFLAGS += -Wl,--gc-sections
+##LDFLAGS += -Wl,--gc-sections,--verbose
 ifeq ($(CONFIG_LINKER_RELAX),y)
   LDFLAGS += -Wl,-O9,--relax
 endif

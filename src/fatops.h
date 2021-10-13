@@ -48,6 +48,12 @@ void     fat_read_sector(buffer_t *buf, uint8_t part, uint8_t track, uint8_t sec
 void     fat_write_sector(buffer_t *buf, uint8_t part, uint8_t track, uint8_t sector);
 void     format_dummy(uint8_t drive, uint8_t *name, uint8_t *id);
 
+#ifdef CONFIG_VCPUSUPPORT
+extern uint16_t fatfile_blockbytesno;
+extern uint8_t fatfile_blockstart;
+void fat_setbufferparams(uint8_t startpos, uint8_t byteno);
+#endif
+
 extern const fileops_t fatops;
 extern uint8_t file_extension_mode;
 

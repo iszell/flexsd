@@ -35,6 +35,7 @@
 #include "timer.h"
 #include "uart.h"
 #include "sdcard.h"
+#include "vcpu6502emu.h"
 
 #ifdef CONFIG_TWINSD
 #  define MAX_CARDS 2
@@ -174,6 +175,10 @@ SD_CHANGE_HANDLER {
     disk_state = DISK_CHANGED;
   else
     disk_state = DISK_REMOVED;
+#ifdef CONFIG_VCPUSUPPORT
+  interruptcode |= VCPU_ERROR_CARD;
+  set_vcpurunflag(0);
+#endif
 }
 #endif
 
@@ -184,6 +189,10 @@ SD2_CHANGE_HANDLER {
     disk_state = DISK_CHANGED;
   else
     disk_state = DISK_REMOVED;
+#ifdef CONFIG_VCPUSUPPORT
+  interruptcode |= VCPU_ERROR_CARD;
+  set_vcpurunflag(0);
+#endif
 }
 #endif
 

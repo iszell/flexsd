@@ -26,10 +26,14 @@
 #ifndef DISKCHANGE_H
 #define DISKCHANGE_H
 
+#include <stdbool.h>
 #include "dirent.h"
+
+extern uint8_t linenum;
 
 void change_init(void);
 void change_disk(void);
+bool mount_line(void);
 void set_changelist(path_t *path, uint8_t *filename);
 
 #endif
