@@ -52,6 +52,7 @@
 #include "timer.h"
 #include "uart.h"
 #include "iec.h"
+#include "vcpu6502emu.h"
 
 /* ------------------------------------------------------------------------- */
 /*  Global variables                                                         */
@@ -98,6 +99,10 @@ uint8_t iec_check_atn(void) {
 IEC_ATN_HANDLER {
   if (!IEC_ATN) {
     set_data(0);
+#ifdef CONFIG_VCPUSUPPORT
+    interruptcode |= VCPU_ERROR_ATN;
+    set_vcpurunflag(0);
+#endif
   }
 }
 #endif

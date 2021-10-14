@@ -30,6 +30,7 @@
 #include "ff.h"
 #include "led.h"
 #include "buffers.h"
+#include "config.h"
 
 dh_t    matchdh;
 uint8_t ops_scratch[33];
@@ -38,7 +39,13 @@ uint8_t ops_scratch[33];
 buffer_t buffers[CONFIG_BUFFER_COUNT+1];
 
 /// The actual data buffers
-static uint8_t bufferdata[CONFIG_BUFFER_COUNT*256];
+//static uint8_t bufferdata[CONFIG_BUFFER_COUNT*256];
+#ifdef CONFIG_VCPUSUPPORT
+  #if ((CONFIG_VCPUOPTIMLEVEL & 2) != 0)
+__attribute__ ((section(".bss.blbuffers")))
+  #endif
+#endif
+uint8_t bufferdata[CONFIG_BUFFER_COUNT*256];
 
 /// Number of active data buffers + 16 * number of dirty buffers
 uint8_t active_buffers;

@@ -53,6 +53,7 @@
 #include "utils.h"
 #include "wrapops.h"
 #include "doscmd.h"
+#include "vcpu6502emu.h"
 
 #define CURSOR_RIGHT 0x1d
 
@@ -84,6 +85,7 @@ struct fastloader_rxtx_s {
   fastloader_tx_t txfunc;
 };
 
+#if defined(CONFIG_LOADER_GEOS) || defined(CONFIG_LOADER_WHEELS) || defined(CONFIG_LOADER_FC3)
 static const PROGMEM struct fastloader_rxtx_s fl_rxtx_table[] = {
 #ifdef CONFIG_LOADER_GEOS
   [RXTX_GEOS_1MHZ]     = { geos_get_byte_1mhz,     geos_send_byte_1mhz     },
@@ -101,6 +103,7 @@ static const PROGMEM struct fastloader_rxtx_s fl_rxtx_table[] = {
   [RXTX_FC3OF_NTSC]    = { NULL, fc3_oldfreeze_ntsc_send },
 #endif
 };
+#endif
 
 struct fastloader_crc_s {
   uint16_t crc;
@@ -309,6 +312,11 @@ static const PROGMEM uint8_t system_partition_info[] = {
 uint8_t globalflags;
 #endif
 
+#ifdef CONFIG_VCPUSUPPORT
+  #if ((CONFIG_VCPUOPTIMLEVEL & 2) != 0)
+__attribute__ ((section(".bss.cebuffers")))
+  #endif
+#endif
 uint8_t command_buffer[CONFIG_COMMAND_BUFFER_SIZE+2];
 uint8_t command_length,original_length;
 
@@ -448,6 +456,20 @@ static void run_loader(uint16_t address) {
     dump_buffer_state();
     save_capbuffer();
   }
+#endif
+
+#ifdef CONFIG_VCPUSUPPORT
+#  ifdef CONFIG_VCPULOADERPATCH
+  if (plparams.vcpustartaddr != 0) {
+    if ((plparams.crc == datacrc) && (plparams.startaddr == address)) {
+      vcpuregs.pc = plparams.vcpustartaddr;
+      plparams.vcpustartaddr = 0;
+      detected_loader = FL_NONE;
+      previous_loader = FL_NONE;
+      vcpu6502emu();
+    }
+  }
+#  endif
 #endif
 
   /* Try to find a handler for loader */
@@ -1145,7 +1167,7 @@ static void handle_memexec(void) {
   if (command_length < 5)
     return;
 
-  address = command_buffer[3] + (command_buffer[4]<<8);
+  address = command_buffer[3] | (command_buffer[4]<<8);
   run_loader(address);
 }
 
@@ -1158,7 +1180,7 @@ static void handle_memread(void) {
   if (command_length < 6)
     return;
 
-  address = command_buffer[3] + (command_buffer[4]<<8);
+  address = command_buffer[3] | (command_buffer[4]<<8);
 
   if (address >= 0x8000 && rom_filename[0] != 0) {
     /* Try to use the rom file as data source - look in the current dir first */
@@ -1255,7 +1277,7 @@ static void handle_memwrite(void) {
   if (command_length < 6)
     return;
 
-  address = command_buffer[3] + (command_buffer[4]<<8);
+  address = command_buffer[3] | (command_buffer[4]<<8);
   length  = command_buffer[5];
 
   if (address == 119) {
@@ -1300,6 +1322,7 @@ static void handle_memwrite(void) {
     detected_loader = loader;
 
 #ifdef CONFIG_HAVE_IEC
+  #if defined(CONFIG_LOADER_GEOS) || defined(CONFIG_LOADER_WHEELS) || defined(CONFIG_LOADER_FC3)
     uint8_t index;
 
     index = pgm_read_word(&crcptr->rxtx);
@@ -1308,6 +1331,7 @@ static void handle_memwrite(void) {
       fast_get_byte  = (fastloader_rx_t)pgm_read_word(&(fl_rxtx_table[index].rxfunc));
       fast_send_byte = (fastloader_tx_t)pgm_read_word(&(fl_rxtx_table[index].txfunc));
     }
+  #endif
 #endif
   }
 
@@ -2070,6 +2094,111 @@ static void parse_xcommand(void) {
   }
 }
 
+#ifdef CONFIG_VCPUSUPPORT
+/* --------------------------------- */
+/* Z commands (VCPU: 6502 emulation) */
+/* --------------------------------- */
+static void parse_zcommands(void) {
+  uint8_t *ptr = error_buffer;
+  uint16_t addr = 0;
+  uint8_t len = 1;
+  if (original_length < 2) command_buffer[1] = 0x00;     // If command too short, set "unknown" Z command
+  if (original_length > 3) {
+    addr = (command_buffer[3] << 8) | command_buffer[2];
+  }
+  if (original_length > 4) {
+    len = command_buffer[4];
+  }
+  switch (command_buffer[1]) {
+    case 'B': {           /* Send buffers status ("buffer flags" + secondary address) */
+      for (uint8_t a = 0; a < CONFIG_BUFFER_COUNT; a++) {
+        *ptr++ = (buffers[a].allocated |
+                 (buffers[a].mustflush << 1) |
+                 (buffers[a].read << 2) |
+                 (buffers[a].write << 3) |
+                 (buffers[a].dirty << 4) |
+                 (buffers[a].sendeoi << 5) |
+                 (buffers[a].sticky << 6));     // Not too fancy; put "buffer flags bitfield BYTE" to answer
+        *ptr++ = buffers[a].secondary;
+      }
+      buffers[ERRORBUFFER_IDX].lastused = (CONFIG_BUFFER_COUNT*2)-1;
+      break;
+    }
+    case 'R': {           /* Read buffers as simple RAM */
+      if (len > CONFIG_ERROR_BUFFER_SIZE) {
+        set_error_ts(ERROR_SYNTAX_VCPU, 1, 0);
+        return;
+      }
+      if ((addr + len) > (CONFIG_BUFFER_COUNT * 256)) {
+        set_error_ts(ERROR_SYNTAX_VCPU, 2, 0);
+        return;
+      }
+      memcpy(ptr, ((uint8_t *)&bufferdata + addr), len);
+      buffers[ERRORBUFFER_IDX].lastused = len-1;
+      break;
+    }
+    case 'W': {           /* Write buffers as simple RAM */
+      if (original_length < 4) return;
+      len = original_length - 4;
+      if ((addr + len) > (CONFIG_BUFFER_COUNT * 256)) {
+        set_error_ts(ERROR_SYNTAX_VCPU, 3, 0);
+        return;
+      }
+      ptr = &command_buffer[4];
+      memcpy(((uint8_t *)&bufferdata + addr), ptr, len);
+      set_error(ERROR_OK);
+      break;
+    }
+    case 'E': {           /* "Execute" buffer with VCPU */
+      if (original_length > 2) {
+        len = original_length - 2;
+        ptr = &command_buffer[2];
+        if (len > sizeof(vcpuregs)) len = sizeof(vcpuregs);
+        memcpy((uint8_t *)&vcpuregs, ptr, len);
+      }
+      vcpu6502emu();
+      break;
+    }
+    case 'C': {           /* Get VCPU status */
+      memcpy(ptr, (uint8_t *)&vcpuregs, sizeof(vcpuregs));
+      buffers[ERRORBUFFER_IDX].lastused = sizeof(vcpuregs)-1;
+      break;
+    }
+#ifdef CONFIG_VCPULOADERPATCH
+    case 'P': {           /* Set loader patcher parameters */
+      if (original_length == 8) {
+        memcpy((uint8_t *)&plparams, (uint8_t *)&command_buffer[2], 6);
+      } else set_error_ts(ERROR_SYNTAX_VCPU, 4, 0);
+      break;
+    }
+#endif
+    case 'I': {           /* Return informations */
+      *ptr++ = VCPU_VERSION | (VCPU_BUSTYPE << 5);    // This BYTE is NOT 0x33 (ascii number)
+      *ptr++ = CONFIG_COMMAND_BUFFER_SIZE;
+      *ptr++ = CONFIG_ERROR_BUFFER_SIZE;
+      *ptr++ = CONFIG_BUFFER_COUNT;
+      buffers[ERRORBUFFER_IDX].lastused = 3;
+      break;
+    }
+#ifdef VCPUDEBUG_EN
+    case 'Q': {           /* For debug: get buffer_t struct for specified buffer */
+      memcpy(ptr, ((uint8_t *)&buffers + (command_buffer[2] * sizeof(buffer_t))), sizeof(buffer_t));
+      buffers[ERRORBUFFER_IDX].lastused = sizeof(buffer_t)-1;
+      break;
+    }
+    case 'M': {           /* For debug: send AVR memory */
+      memcpy(ptr, ((uint8_t *)0x0000 + (command_buffer[2] * 64)), 64);
+      buffers[ERRORBUFFER_IDX].lastused = 64-1;
+      break;
+    }
+#endif
+    default: {
+      set_error(ERROR_SYNTAX_VCPU);
+      break;
+    }
+  }
+}
+#endif
 
 /* ------------------------------------------------------------------------- */
 /*  Main command parser function                                             */
@@ -2186,6 +2315,12 @@ void parse_doscommand(void) {
   case 'X':
     parse_xcommand();
     break;
+
+#ifdef CONFIG_VCPUSUPPORT
+  case 'Z':
+    parse_zcommands();
+    break;
+#endif
 
   default:
     set_error(ERROR_SYNTAX_UNKNOWN);

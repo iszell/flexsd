@@ -32,6 +32,7 @@
 #include "asmconfig.h"
 #include "fastloader.h"
 #include <avr/io.h>
+#include "vcpu6502emu.h"
 
 /* Timing offsets for JiffyDos read/write */
 /* These values are added to the delayloop counter before the first      */
@@ -82,6 +83,12 @@ IEC_ATN_INT_VECT:
 iiv_not_fl_dreamload_old:
         ; no custom behaviour, this is ATN ACK
         sbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA    ; DATA low
+#ifdef CONFIG_VCPUSUPPORT
+        lds     r18, interruptcode
+        ori     r18, VCPU_ERROR_ATN
+        sts     interruptcode, r18
+        cbi     _SFR_IO_ADDR(VCPURUNFLAG_REG), VCPURUNFLAG_BIT  ;STOP VCPU
+#endif
 
 iiv_atn_irq_end:
 #ifdef IEC_PCMSK

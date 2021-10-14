@@ -63,6 +63,14 @@ typedef enum { EXT_UNKNOWN, EXT_IS_X00, EXT_IS_TYPE } exttype_t;
 
 uint8_t file_extension_mode;
 
+#ifdef CONFIG_VCPUSUPPORT
+  uint16_t fatfile_blockbytesno = 254;
+  uint8_t fatfile_blockstart = 2;
+#else
+  #define fatfile_blockbytesno 254
+  #define fatfile_blockstart 2
+#endif
+
 /* ------------------------------------------------------------------------- */
 /*  Utility functions                                                        */
 /* ------------------------------------------------------------------------- */
@@ -408,7 +416,7 @@ static uint8_t fat_file_read(buffer_t *buf) {
 
   buf->fptr = buf->pvt.fat.fh.fptr - buf->pvt.fat.headersize;
 
-  res = f_read(&buf->pvt.fat.fh, buf->data+2, (buf->recordlen ? buf->recordlen : 254), &bytesread);
+  res = f_read(&buf->pvt.fat.fh, buf->data+fatfile_blockstart, (buf->recordlen ? buf->recordlen : fatfile_blockbytesno), &bytesread);
   if (res != FR_OK) {
     parse_error(res,1);
     free_buffer(buf);
@@ -422,11 +430,11 @@ static uint8_t fat_file_read(buffer_t *buf) {
     buf->data[2] = (buf->recordlen ? 255 : 13);
   }
 
-  buf->position = 2;
-  buf->lastused = bytesread+1;
+  buf->position = fatfile_blockstart;
+  buf->lastused = bytesread-1+fatfile_blockstart;
   if(buf->recordlen) // strip nulls from end of REL record.
     while(!buf->data[buf->lastused] && --(buf->lastused) > 1);
-  if (bytesread < 254
+  if (bytesread < fatfile_blockbytesno
       || (buf->pvt.fat.fh.fsize - buf->pvt.fat.fh.fptr) == 0
       || buf->recordlen
      )
@@ -459,7 +467,7 @@ static uint8_t write_data(buffer_t *buf) {
   if(buf->recordlen)
     buf->lastused = buf->recordlen + 1;
 
-  res = f_write(&buf->pvt.fat.fh, buf->data+2, buf->lastused-1, &byteswritten);
+  res = f_write(&buf->pvt.fat.fh, buf->data+fatfile_blockstart, buf->lastused-fatfile_blockstart+1U, &byteswritten);
   if (res != FR_OK) {
     uart_putc('r');
     parse_error(res,1);
@@ -468,7 +476,7 @@ static uint8_t write_data(buffer_t *buf) {
     return 1;
   }
 
-  if (byteswritten != buf->lastused-1U) {
+  if (byteswritten != buf->lastused+1U-fatfile_blockstart) {
     uart_putc('l');
     set_error(ERROR_DISK_FULL);
     f_close(&buf->pvt.fat.fh);
@@ -478,8 +486,8 @@ static uint8_t write_data(buffer_t *buf) {
 
   mark_buffer_clean(buf);
   buf->mustflush = 0;
-  buf->position  = 2;
-  buf->lastused  = 2;
+  buf->position  = fatfile_blockstart;
+  buf->lastused  = fatfile_blockstart;
   buf->fptr      = buf->pvt.fat.fh.fptr - buf->pvt.fat.headersize;
 
   return 0;
@@ -1671,6 +1679,20 @@ uint8_t image_write(uint8_t part, DWORD offset, void *buffer, uint16_t bytes, ui
 void format_dummy(uint8_t drive, uint8_t *name, uint8_t *id) {
   set_error(ERROR_SYNTAX_UNKNOWN);
 }
+
+/* For FAT files, set buffer index + block size parameters */
+/* If "byteno" == 0, 256 BYTEs required */
+#ifdef CONFIG_VCPUSUPPORT
+void fat_setbufferparams(uint8_t startpos, uint8_t byteno) {
+  uint16_t n;
+  if (byteno == 0) n = 256;
+  else n = byteno;
+  if ((n + startpos) <= 256) {
+    fatfile_blockbytesno = n;
+    fatfile_blockstart = startpos;
+  }
+}
+#endif
 
 const PROGMEM fileops_t fatops = {  // These should be at bottom, to be consistent with d64ops and m2iops
   &fat_open_read,

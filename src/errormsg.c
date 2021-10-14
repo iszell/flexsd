@@ -40,6 +40,12 @@
 #include "errormsg.h"
 
 uint8_t current_error;
+
+#ifdef CONFIG_VCPUSUPPORT
+  #if ((CONFIG_VCPUOPTIMLEVEL & 2) != 0)
+__attribute__ ((section(".bss.cebuffers")))
+  #endif
+#endif
 uint8_t error_buffer[CONFIG_ERROR_BUFFER_SIZE];
 
 /// Version number string, will be added to message 73
@@ -85,6 +91,9 @@ static const PROGMEM uint8_t messages[] = {
   EC(29),
     5,'I','D',' ','M','I','S','M','A','T','C','H',
   EC(30), EC(31), EC(32), EC(33), EC(34),
+#ifdef CONFIG_VCPUSUPPORT
+  EC(35),
+#endif
     'S','Y','N','T','A','X',3,
   EC(39), EC(62),
     0,4,'F','O','U','N','D',
@@ -120,6 +129,10 @@ static const PROGMEM uint8_t messages[] = {
     'B','U','F','F','E','R',11,'S','M','A','L','L',
   EC(79),
     'I','M','A','G','E',' ',0,' ','I','N','V','A','L','I','D',
+#ifdef CONFIG_VCPUSUPPORT
+  EC(97),
+    'V','C','P','U',3,
+#endif
   EC(98),
     'U','N','K','N','O','W','N',' ','D','R','I','V','E','C','O','D','E',
   EC(99),
