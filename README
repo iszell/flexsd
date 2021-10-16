@@ -453,6 +453,8 @@ Supported commands:
   corresponds to any of the known software fastloaders so the correct
   emulation code can be used when M-E is called.
 
+- Z: VCPU commands. For usage, see VCPU documentation.
+
 Large buffers:
 ==============
 To support commands which directly access the storage devices support
@@ -695,6 +697,12 @@ JiffyDOS:
 =========
 The JiffyDOS protocol has very relaxed timing constraints compared to
 Turbodisk, but still not as relaxed as the standard Commodore IEC protocol.
+
+Virtual CPU (VCPU):
+===================
+This extension can be used to run any program in the SD2IEC, as possible on
+the original CBM drives. This extension is ready only SD2IEC device with
+8 MHz AVR + CBM serial port. Other devices not supported yet.
 
 x00 files:
 ==========
