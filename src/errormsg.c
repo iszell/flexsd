@@ -52,7 +52,7 @@ uint8_t error_buffer[CONFIG_ERROR_BUFFER_SIZE];
 const char PROGMEM versionstr[] = "SD2IEC V" VERSION;
 
 /// Long version string, used for message 9
-const char PROGMEM longverstr[] = LONGVERSION;
+const char PROGMEM longverstr[] = "-FSD" LONGVERSION;
 
 #define EC(x) x+0x80
 
@@ -249,7 +249,8 @@ void set_error_ts(uint8_t errornum, uint8_t track, uint8_t sector) {
     if (errornum == ERROR_LONGVERSION) {
       i = 0;
       msg--;
-      while ((*msg++ = toupper((int)pgm_read_byte(longverstr+i++)))) ;
+      //while ((*msg++ = toupper((int)pgm_read_byte(longverstr+i++)))) ;
+      while ((*msg++ = pgm_read_byte(longverstr+i++))) ;
     }
 
     msg--;

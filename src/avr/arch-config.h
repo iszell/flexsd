@@ -534,9 +534,8 @@ static inline void board_init(void) {
   PORTG = _BV(PG0) | _BV(PG1) | _BV(PG2);
 }
 
-#  define VCPURUNFLAG_REG DDRA
+#  define VCPURUNFLAG_REG PORTA
 #  define VCPURUNFLAG_BIT PA0
-#  define VCPURUNFLAG_PORT PORTA
 
 
 #elif CONFIG_HARDWARE_VARIANT == 5
@@ -732,9 +731,8 @@ static inline void board_init(void) {
   PORTG |= _BV(PG1);
 }
 
-#  define VCPURUNFLAG_REG DDRB
-#  define VCPURUNFLAG_BIT PB0
-#  define VCPURUNFLAG_PORT PORTB
+#  define VCPURUNFLAG_REG PORTA
+#  define VCPURUNFLAG_BIT PA0
 
 
 #elif CONFIG_HARDWARE_VARIANT == 8

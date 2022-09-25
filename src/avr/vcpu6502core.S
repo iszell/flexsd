@@ -346,7 +346,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	decode_fetch		;$D8: CLD
 		rjmp	instr_cmp_am7		;$D9: CMP $ghjk,Y
 		rjmp	ninstr_hangup		;$DA: IOp
-		rjmp	ninstr_hangup		;$DB: IOp
+		rjmp	uinstr_op_0xdb		;$DB: (IOp) (65C02: STP) ULBIT
 		rjmp	ninstr_hangup		;$DC: IOp
 		rjmp	instr_cmp_am8		;$DD: CMP $ghjk,X
 		rjmp	instr_dec_am8		;$DE: DEC $ghjk,X
@@ -1592,7 +1592,11 @@ uinstr_op_0x8b:	ld	R_TEMP2,R_PC+				;2	Read CLK bitmask
 uinstr_commout_d1:
 		nop						;1
 uinstr_commout:	out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP		;1	20 Clk "2.5T"
+#ifdef INSTRTABLEALIGNED
 		opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch				;2
+#endif
 
 ;	UCDTA #$xx, #$xx: CLK/DAT lines to A register bits:
 uinstr_op_0x9b:	ld	R_TEMP2,R_PC+				;2	Read CLK bitmask
@@ -1615,8 +1619,33 @@ uinstr_op_0x9b:	ld	R_TEMP2,R_PC+				;2	Read CLK bitmask
 #endif
 		and	R_A,R_TEMP3				;1	Clear requested bit in A register, if DAT line low
 		nop						;1	20 Clk "2.5T"
-uinstr_defetch:	opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
+uinstr_defetch:
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch				;2
+#endif
 
+;=== Serial Lines "BIT":
+;	ULBIT:
+uinstr_op_0xdb:	rjmp	1f					;2
+1:		in	R_TEMP,_SFR_IO_ADDR(IEC_INPUT)		;1	;Read ATN/CLK/DAT (/SRQ)
+#ifdef IEC_INPUTS_INVERTED
+		com	R_TEMP					;1
+#else
+		nop						;1
+#endif
+		bst	R_TEMP,IEC_PIN_ATN			;1
+		bld	R_SR,6					;1	ATN -> SR B6 (V flag)
+		bst	R_TEMP,IEC_PIN_CLOCK			;1
+		bld	R_S_N,7					;1	CLK -> SR B7 (N flag)
+		andi	R_TEMP,(1 << IEC_PIN_DATA)		;1
+		mov	R_S_Z,R_TEMP				;1	DAT -> SR B1 (Z flag) 16 Clk: "2T"
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch				;2
+#endif
 
 ;=== Cycle instructions:
 ;	UINDB: Increment index, Decrement counter, Branch if no underrun:
@@ -1871,6 +1900,7 @@ uinstr_op_0x8b:
 uinstr_op_0x9b:
 uinstr_op_0xab:
 uinstr_op_0xbb:
+uinstr_op_0xdb:
 uinstr_op_0xeb:
 uinstr_op_0xfb:
 		rjmp	ninstr_hangup
@@ -1983,7 +2013,11 @@ write_memory:	cpi	R_CADDRH,CONFIG_BUFFER_COUNT		;1	7+n
 		adc	R_CADDRH,R_RAMH				;1
 #endif
 2:		st	R_CADDR,R_TEMP				;2
-		opcodefetchcall					;4/7
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch				;2
+#endif
 
 1:		cpi	R_CADDRH,(VCPU_ADDR_IO >> 8)		;1	VCPU I/O?
 		brne	3f
@@ -2278,7 +2312,11 @@ writeio_cbmserdo:
 
 ;	Unimplemented register write, no function:
 writeio_na:	movw	R_IR,R_INSTRT				;1
-		opcodefetchcall					;4/7
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch				;2
+#endif
 ;=============================================
 ;===	6502 emulation entry:
 
@@ -2349,11 +2387,19 @@ decode_fetch:	opcodefetchcall				;4/7
 
 decode_setnz_x:	mov	R_S_Z,R_X			;1
 		mov	R_S_N,R_S_Z			;1
-		opcodefetchcall				;4/7
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall				;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch			;2
+#endif
 
 decode_setnz_y:	mov	R_S_Z,R_Y			;1
 		mov	R_S_N,R_S_Z			;1
-		opcodefetchcall				;4/7
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall				;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch			;2
+#endif
 
 
 

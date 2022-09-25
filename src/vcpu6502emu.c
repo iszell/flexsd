@@ -221,7 +221,9 @@ void vcpu6502emu(void) {
           break;
         }
       }
-      if (vcpuregs.reqfunction < 0x10) emucalled = 0;    // If required, exit
+      if (vcpuregs.reqfunction < 0x10) {    // If required, exit
+        emucalled = 0;    
+      }
     } else {
       set_error_ts(ERROR_VCPU, 100, vcpuregs.interrupt);
       break;              // No syscall: exit
@@ -231,6 +233,7 @@ void vcpu6502emu(void) {
   set_clock(1);
   set_data(1);
   set_srq(1);
+  if (current_error == ERROR_VCPU) free_multiple_buffers(FMB_USER_CLEAN);
   set_vcpurunflag(0);
   emucalled = 0;
   fat_setbufferparams(2, 254);      // Restore FAT buffer-start + buffer length
