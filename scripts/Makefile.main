@@ -2,12 +2,13 @@
 
 # Define version number
 MAJOR = 1
-MINOR = 0
+MINOR = 1
 PATCHLEVEL = 0
 FIX =
 
 # Forces bootloader version to 0, comment out or leave empty for release
-PRERELEASE = atentdead0
+#PRERELEASE = atentdead0
+PRERELEASE =  rc1
 
 #----------------------------------------------------------------------------
 # WinAVR Makefile Template written by Eric B. Weddington, Joerg Wunsch, et al.
@@ -46,7 +47,7 @@ include $(OBJDIR)/make.inc
 HEXFORMAT = ihex
 
 # Target file name (without extension).
-TARGET = $(OBJDIR)/sd2iec
+TARGET = $(OBJDIR)/flexsd
 
 # List C source files here. (C dependencies are automatically generated.)
 SRC  = buffers.c fatops.c fileops.c main.c errormsg.c
@@ -129,6 +130,10 @@ ifeq ($(CONFIG_RTC_SOFTWARE),y)
   SRC += rtc.c avr/softrtc.c
 endif
 
+ifeq ($(CONFIG_VCPUSUPPORT),y)
+  SRC += vcpu6502emu.c
+endif
+
 # Optimization level, can be [0, 1, 2, 3, s].
 #     0 = turn off optimization. s = optimize for size.
 #     (Note: 3 is not always the best optimization level. See avr-libc FAQ.)
@@ -186,6 +191,10 @@ PROGRAMVERSION := $(PROGRAMVERSION)$(PRERELEASE)
 endif
 
 LONGVERSION := -$(CONFIGSUFFIX)
+
+LONGVERSION := `echo $(LONGVERSION) | tr a-z A-Z`
+PROGRAMVERSION := `echo $(PROGRAMVERSION) | tr a-z A-Z`
+
 CDEFS += -DVERSION=\"$(PROGRAMVERSION)\" -DLONGVERSION=\"$(LONGVERSION)\"
 
 
@@ -237,6 +246,7 @@ ASFLAGS = -Wa,-gstabs -I$(OBJDIR) -Isrc -Isrc/$(CONFIG_ARCH)
 #    --cref:    add cross reference to  map file
 LDFLAGS = -Wl,-Map=$(TARGET).map,--cref
 LDFLAGS += -Wl,--gc-sections
+##LDFLAGS += -Wl,--gc-sections,--verbose
 ifeq ($(CONFIG_LINKER_RELAX),y)
   LDFLAGS += -Wl,-O9,--relax
 endif
@@ -315,10 +325,14 @@ $(OBJDIR)/%.bin: $(OBJDIR)/%.elf
 	$(Q)$(OBJCOPY) -O binary -R .eeprom $< $@
 	$(E) "  CRCGEN $@"
 	$(Q)$(CRCGEN) $@ $(BINARY_LENGTH) $(CONFIG_BOOT_DEVID) $(BOOT_VERSION)
+	$(E) "  CPOUT  $@"
+	$(Q)cp $(TARGET).bin $(TARGET)-$(MAJOR).$(MINOR).$(PATCHLEVEL)$(PRERELEASE)-$(CONFIGSUFFIX).bin
 else
 $(OBJDIR)/%.bin: $(OBJDIR)/%.elf
 	$(E) "  BIN    $@"
 	$(Q)$(OBJCOPY) -O binary -R .eeprom $< $@
+	$(E) "  CPOUT  $@"
+	$(Q)cp $(TARGET).bin $(TARGET)-$(MAJOR).$(MINOR).$(PATCHLEVEL)$(PRERELEASE)-$(CONFIGSUFFIX).bin
 endif
 
 

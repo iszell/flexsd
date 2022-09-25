@@ -1,3 +1,17 @@
+FlexSD - Flexible SD Drive firmware for SD2IEC drives
+
+This program is the sd2iec fork. You can find the original version here:
+[https://www.sd2iec.de](https://www.sd2iec.de)
+
+This firmware can be used with AVR-based drives at this moment. The
+original functions are extended with the possibility of program
+execution. The programs are executed using a virtual CPU (VCPU).
+The documentation for the VCPU is available in a separate file, the
+other functions are identical to the originals. The original sd2iec
+description is readed below.
+
+-----
+
 sd2iec - a controller/interface adapting storage devices to the CBM serial bus
 Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
 Parts based on code from others, see comments in main.c for details.
@@ -9,11 +23,6 @@ IEEE488 support by Nils Eilers
 Free software under GPL version 2 ONLY, see comments in main.c and
 COPYING for details.
 
-# Note #
-
-If you found this file on Github, you found an unofficial clone of the
-original repository. The original repository is available on
-[https://www.sd2iec.de](https://www.sd2iec.de)
 
 
 FIXME:This file still needs to be expanded. A lot.
@@ -453,6 +462,8 @@ Supported commands:
   corresponds to any of the known software fastloaders so the correct
   emulation code can be used when M-E is called.
 
+- Z: VCPU commands. For usage, see VCPU documentation.
+
 Large buffers:
 ==============
 To support commands which directly access the storage devices support
@@ -695,6 +706,12 @@ JiffyDOS:
 =========
 The JiffyDOS protocol has very relaxed timing constraints compared to
 Turbodisk, but still not as relaxed as the standard Commodore IEC protocol.
+
+Virtual CPU (VCPU):
+===================
+This extension can be used to run any program in the SD2IEC, as possible on
+the original CBM drives. This extension is ready only SD2IEC device with
+8 MHz AVR + CBM serial port. Other devices not supported yet.
 
 x00 files:
 ==========

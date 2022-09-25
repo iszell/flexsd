@@ -89,5 +89,7 @@ static inline tick_t getticks(void) {
 
 /* Timer initialisation - defined in $ARCH/timer-init.c */
 void timer_init(void);
+void timer_enable(void);
+void timer_disable(void);
 
 #endif

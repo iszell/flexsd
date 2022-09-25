@@ -35,5 +35,13 @@ void timer_init(void) {
   TCNT1  = 0;
   TCCR1A = 0;
   TCCR1B = _BV(WGM12) | _BV(CS10) | _BV(CS11);
+  timer_enable();
+}
+
+void timer_enable(void) {
   TIMSK1 |= _BV(OCIE1A);
+}
+
+void timer_disable(void) {
+  TIMSK1 &= ~(_BV(OCIE1A));
 }

@@ -51,7 +51,7 @@ static const char PROGMEM petscii_marker[8]   = "#PETSCII";
 
 static FIL     swaplist;
 static path_t  swappath;
-static uint8_t linenum;
+uint8_t linenum;
 
 #define BLINK_BACKWARD 1
 #define BLINK_FORWARD  2
@@ -81,7 +81,7 @@ static void confirm_blink(uint8_t type) {
   }
 }
 
-static bool mount_line(void) {
+bool mount_line(void) {
   FRESULT res;
   UINT bytesread;
   uint8_t *buffer_start;

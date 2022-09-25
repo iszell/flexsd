@@ -47,7 +47,7 @@ typedef uint8_t rawbutton_t;
 #  define EEPROMFS_SECTORSIZE 64
 
 
-#if CONFIG_HARDWARE_VARIANT==1
+#if CONFIG_HARDWARE_VARIANT == 1
 /* ---------- Hardware configuration: Example ---------- */
 /* This is a commented example for most of the available options    */
 /* in case someone wants to build Yet Another[tm] hardware variant. */
@@ -161,37 +161,15 @@ static inline void device_hw_address_init(void) {
 /*** LEDs ***/
 /* Please don't build single-LED hardware anymore... */
 
-/* Initialize ports for all LEDs */
-static inline void leds_init(void) {
-  /* Note: Depending on the chip and register these lines can compile */
-  /*       to one instruction each on AVR. For two bits this is one   */
-  /*       instruction shorter than "DDRC |= _BV(PC0) | _BV(PC1);"    */
-  DDRC |= _BV(PC0);
-  DDRC |= _BV(PC1);
-}
-
-/* --- "BUSY" led, recommended color: green (usage similiar to 1541 LED) --- */
-static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
-  if (state)
-    PORTC |= _BV(PC0);
-  else
-    PORTC &= ~_BV(PC0);
-}
-
-/* --- "DIRTY" led, recommended color: red (errors, unwritten data in memory) --- */
-static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
-  if (state)
-    PORTC |= _BV(PC1);
-  else
-    PORTC &= ~_BV(PC1);
-}
-
-/* Toggle function used for error blinking */
-static inline void toggle_dirty_led(void) {
-  /* Sufficiently new AVR cores have a toggle function */
-  PINC |= _BV(PC1);
-}
-
+/*** LED definitions: ***/
+#  define LED_BUSY_PORT PORTC
+#  define LED_BUSY_DDR DDRC
+#  define LED_BUSY_PIN PC0
+#  define LED_DIRTY_PORT PORTC
+#  define LED_DIRTY_INPUT PINC
+#  define LED_DIRTY_DDR DDRC
+#  define LED_DIRTY_PIN PC1
+#  define LED_ACTIVE_LEVEL 1
 
 /*** IEC signals ***/
 #  define IEC_INPUT PINA
@@ -242,21 +220,13 @@ static inline void iec_interrupts_init(void) {
 /* not documented yet, look at petSD/XS-1541 for guidance */
 
 /*** User interface ***/
-/* Button NEXT changes to the next disk image and enables sleep mode (held) */
-#  define BUTTON_NEXT _BV(PC4)
 
-/* Button PREV changes to the previous disk image */
-#  define BUTTON_PREV _BV(PC3)
-
-/* Read the raw button state - a depressed button should read as 0 */
-static inline rawbutton_t buttons_read(void) {
-  return PINC & (BUTTON_NEXT | BUTTON_PREV);
-}
-
-static inline void buttons_init(void) {
-  DDRC  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
-  PORTC |= BUTTON_NEXT | BUTTON_PREV;
-}
+/*** Button definitions ***/
+#  define BUTTONS_PORT PORTC
+#  define BUTTONS_INPUT PINC
+#  define BUTTONS_DDR DDRC
+#  define BUTTONS_NEXT_PIN PC4
+#  define BUTTONS_PREV_PIN PC3
 
 /* Software I2C lines for the RTC and display */
 #  define SOFTI2C_PORT    PORTC
@@ -276,10 +246,24 @@ static inline void buttons_init(void) {
 //  PORTG |= _BV(PG1);
 //}
 
+/* VCPU "run flag" definition */
+/* If this bit is 1: VCPU is running */
+/* Requirements: only one bit in any I/O register in 0x00..0x1F range */
+/*   for SBI/CBI/SBIS/SBIC usage */
+/*   If set this definition to any unused port pin and connect LED to this, */
+/*   this LED switch On/Off for VCPU usage */
+#  define VCPURUNFLAG_REG DDRB
+#  define VCPURUNFLAG_BIT PB0
+/* If VCPU "run flag" is assigned to any port pin, set PORT name, */
+/*   the LED init routine set the correct level of this pin */
+/* If "run flag" is *NOT* use port pin, comment out this definition */
+#  define VCPURUNFLAG_PORT PORTB
+
+
 
 /* Pre-configurated hardware variants */
 
-#elif CONFIG_HARDWARE_VARIANT==2
+#elif CONFIG_HARDWARE_VARIANT == 2
 /* ---------- Hardware configuration: Shadowolf 1 ---------- */
 #  define HAVE_SD
 #  define SD_CHANGE_HANDLER     ISR(INT0_vect)
@@ -315,28 +299,14 @@ static inline void device_hw_address_init(void) {
   PORTD |=   _BV(PD7)|_BV(PD5);
 }
 
-static inline void leds_init(void) {
-  DDRC |= _BV(PC0);
-  DDRC |= _BV(PC1);
-}
-
-static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
-  if (state)
-    PORTC |= _BV(PC0);
-  else
-    PORTC &= ~_BV(PC0);
-}
-
-static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
-  if (state)
-    PORTC |= _BV(PC1);
-  else
-    PORTC &= ~_BV(PC1);
-}
-
-static inline void toggle_dirty_led(void) {
-  PINC |= _BV(PC1);
-}
+#  define LED_BUSY_PORT PORTC
+#  define LED_BUSY_DDR DDRC
+#  define LED_BUSY_PIN PC0
+#  define LED_DIRTY_PORT PORTC
+#  define LED_DIRTY_INPUT PINC
+#  define LED_DIRTY_DDR DDRC
+#  define LED_DIRTY_PIN PC1
+#  define LED_ACTIVE_LEVEL 1
 
 #  define IEC_INPUT             PINA
 #  define IEC_DDR               DDRA
@@ -353,17 +323,15 @@ static inline void iec_interrupts_init(void) {
   PCIFR |= _BV(PCIF0);
 }
 
-#  define BUTTON_NEXT           _BV(PC4)
-#  define BUTTON_PREV           _BV(PC3)
+#  define BUTTONS_PORT PORTC
+#  define BUTTONS_INPUT PINC
+#  define BUTTONS_DDR DDRC
+#  define BUTTONS_NEXT_PIN PC4
+#  define BUTTONS_PREV_PIN PC3
 
-static inline rawbutton_t buttons_read(void) {
-  return PINC & (BUTTON_NEXT | BUTTON_PREV);
-}
-
-static inline void buttons_init(void) {
-  DDRC  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
-  PORTC |= BUTTON_NEXT | BUTTON_PREV;
-}
+#  define VCPURUNFLAG_REG DDRB
+#  define VCPURUNFLAG_BIT PB0
+#  define VCPURUNFLAG_PORT PORTB
 
 
 #elif CONFIG_HARDWARE_VARIANT == 3
@@ -401,28 +369,14 @@ static inline void device_hw_address_init(void) {
   PORTA |=   _BV(PA2)|_BV(PA3);
 }
 
-static inline void leds_init(void) {
-  DDRA |= _BV(PA0);
-  DDRA |= _BV(PA1);
-}
-
-static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
-  if (state)
-    PORTA &= ~_BV(PA0);
-  else
-    PORTA |= _BV(PA0);
-}
-
-static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
-  if (state)
-    PORTA &= ~_BV(PA1);
-  else
-    PORTA |= _BV(PA1);
-}
-
-static inline void toggle_dirty_led(void) {
-  PINA |= _BV(PA1);
-}
+#  define LED_BUSY_PORT PORTA
+#  define LED_BUSY_DDR DDRA
+#  define LED_BUSY_PIN PA0
+#  define LED_DIRTY_PORT PORTA
+#  define LED_DIRTY_INPUT PINA
+#  define LED_DIRTY_DDR DDRA
+#  define LED_DIRTY_PIN PA1
+#  define LED_ACTIVE_LEVEL 0
 
 #  define IEC_INPUT             PINC
 #  define IEC_DDR               DDRC
@@ -439,17 +393,11 @@ static inline void iec_interrupts_init(void) {
   PCIFR |= _BV(PCIF2);
 }
 
-#  define BUTTON_NEXT           _BV(PA4)
-#  define BUTTON_PREV           _BV(PA5)
-
-static inline rawbutton_t buttons_read(void) {
-  return PINA & (BUTTON_NEXT | BUTTON_PREV);
-}
-
-static inline void buttons_init(void) {
-  DDRA  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
-  PORTA |= BUTTON_NEXT | BUTTON_PREV;
-}
+#  define BUTTONS_PORT PORTA
+#  define BUTTONS_INPUT PINA
+#  define BUTTONS_DDR DDRA
+#  define BUTTONS_NEXT_PIN PA4
+#  define BUTTONS_PREV_PIN PA5
 
 #  define SOFTI2C_PORT          PORTC
 #  define SOFTI2C_PIN           PINC
@@ -458,6 +406,10 @@ static inline void buttons_init(void) {
 #  define SOFTI2C_BIT_SDA       PC5
 #  define SOFTI2C_BIT_INTRQ     PC7
 #  define SOFTI2C_DELAY         6
+
+#  define VCPURUNFLAG_REG DDRB
+#  define VCPURUNFLAG_BIT PB0
+#  define VCPURUNFLAG_PORT PORTB
 
 
 #elif CONFIG_HARDWARE_VARIANT == 4
@@ -516,20 +468,11 @@ static inline void device_hw_address_init(void) {
   return;
 }
 
-static inline void leds_init(void) {
-  DDRE |= _BV(PE3);
-}
-
-static inline __attribute__((always_inline)) void set_led(uint8_t state) {
-  if (state)
-    PORTE |= _BV(PE3);
-  else
-    PORTE &= ~_BV(PE3);
-}
-
-static inline void toggle_led(void) {
-  PINE |= _BV(PE3);
-}
+#  define LED_BUSY_PORT PORTE
+#  define LED_BUSY_INPUT PINE
+#  define LED_BUSY_DDR DDRE
+#  define LED_BUSY_PIN PE3
+#  define LED_ACTIVE_LEVEL 1
 
 #  define IEC_INPUT             PINE
 #  define IEC_DDR               DDRE
@@ -548,17 +491,11 @@ static inline void iec_interrupts_init(void) {
   EICRB |= _BV(ISC50);
 }
 
-#  define BUTTON_NEXT           _BV(PG4)
-#  define BUTTON_PREV           _BV(PG3)
-
-static inline rawbutton_t buttons_read(void) {
-  return PING & (BUTTON_NEXT | BUTTON_PREV);
-}
-
-static inline void buttons_init(void) {
-  DDRG  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
-  PORTG |= BUTTON_NEXT | BUTTON_PREV;
-}
+#  define BUTTONS_PORT PORTG
+#  define BUTTONS_INPUT PING
+#  define BUTTONS_DDR DDRG
+#  define BUTTONS_NEXT_PIN PG4
+#  define BUTTONS_PREV_PIN PG3
 
 #  define SOFTI2C_PORT          PORTD
 #  define SOFTI2C_PIN           PIND
@@ -597,8 +534,11 @@ static inline void board_init(void) {
   PORTG = _BV(PG0) | _BV(PG1) | _BV(PG2);
 }
 
+#  define VCPURUNFLAG_REG PORTA
+#  define VCPURUNFLAG_BIT PA0
 
-#elif CONFIG_HARDWARE_VARIANT==5
+
+#elif CONFIG_HARDWARE_VARIANT == 5
 /* ---------- Hardware configuration: Shadowolf 2 aka sd2iec 1.x ---------- */
 #  define HAVE_SD
 #  define SD_CHANGE_HANDLER     ISR(INT0_vect)
@@ -660,28 +600,14 @@ static inline void device_hw_address_init(void) {
   PORTD |=   _BV(PD7)|_BV(PD5);
 }
 
-static inline void leds_init(void) {
-  DDRC |= _BV(PC0);
-  DDRC |= _BV(PC1);
-}
-
-static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
-  if (state)
-    PORTC |= _BV(PC0);
-  else
-    PORTC &= ~_BV(PC0);
-}
-
-static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
-  if (state)
-    PORTC |= _BV(PC1);
-  else
-    PORTC &= ~_BV(PC1);
-}
-
-static inline void toggle_dirty_led(void) {
-  PINC |= _BV(PC1);
-}
+#  define LED_BUSY_PORT PORTC
+#  define LED_BUSY_DDR DDRC
+#  define LED_BUSY_PIN PC0
+#  define LED_DIRTY_PORT PORTC
+#  define LED_DIRTY_INPUT PINC
+#  define LED_DIRTY_DDR DDRC
+#  define LED_DIRTY_PIN PC1
+#  define LED_ACTIVE_LEVEL 1
 
 #  define IEC_INPUT             PINA
 #  define IEC_DDR               DDRA
@@ -703,17 +629,11 @@ static inline void iec_interrupts_init(void) {
   PCIFR |= _BV(PCIF0);
 }
 
-#  define BUTTON_NEXT           _BV(PC3)
-#  define BUTTON_PREV           _BV(PC2)
-
-static inline rawbutton_t buttons_read(void) {
-  return PINC & (BUTTON_NEXT | BUTTON_PREV);
-}
-
-static inline void buttons_init(void) {
-  DDRC  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
-  PORTC |= BUTTON_NEXT | BUTTON_PREV;
-}
+#  define BUTTONS_PORT PORTC
+#  define BUTTONS_INPUT PINC
+#  define BUTTONS_DDR DDRC
+#  define BUTTONS_NEXT_PIN PC3
+#  define BUTTONS_PREV_PIN PC2
 
 #  define SOFTI2C_PORT          PORTC
 #  define SOFTI2C_PIN           PINC
@@ -722,6 +642,10 @@ static inline void buttons_init(void) {
 #  define SOFTI2C_BIT_SDA       PC5
 #  define SOFTI2C_BIT_INTRQ     PC6
 #  define SOFTI2C_DELAY         6
+
+#  define VCPURUNFLAG_REG DDRB
+#  define VCPURUNFLAG_BIT PB0
+#  define VCPURUNFLAG_PORT PORTB
 
 
 /* Hardware configuration 6 was old NKC MMC2IEC */
@@ -765,20 +689,11 @@ static inline void device_hw_address_init(void) {
   return;
 }
 
-static inline void leds_init(void) {
-  DDRG |= _BV(PG0);
-}
-
-static inline __attribute__((always_inline)) void set_led(uint8_t state) {
-  if (state)
-    PORTG |= _BV(PG0);
-  else
-    PORTG &= ~_BV(PG0);
-}
-
-static inline void toggle_led(void) {
-  PING |= _BV(PG0);
-}
+#  define LED_BUSY_PORT PORTG
+#  define LED_BUSY_INPUT PING
+#  define LED_BUSY_DDR DDRG
+#  define LED_BUSY_PIN PG0
+#  define LED_ACTIVE_LEVEL 1
 
 #  define IEC_INPUT             PINB
 #  define IEC_DDRIN             DDRB
@@ -802,17 +717,11 @@ static inline void iec_interrupts_init(void) {
   PCIFR |= _BV(PCIF0);
 }
 
-#  define BUTTON_NEXT           _BV(PG4)
-#  define BUTTON_PREV           _BV(PG3)
-
-static inline rawbutton_t buttons_read(void) {
-  return PING & (BUTTON_NEXT | BUTTON_PREV);
-}
-
-static inline void buttons_init(void) {
-  DDRG  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
-  PORTG |= BUTTON_NEXT | BUTTON_PREV;
-}
+#  define BUTTONS_PORT PORTG
+#  define BUTTONS_INPUT PING
+#  define BUTTONS_DDR DDRG
+#  define BUTTONS_NEXT_PIN PG4
+#  define BUTTONS_PREV_PIN PG3
 
 #  define HAVE_BOARD_INIT
 
@@ -821,6 +730,10 @@ static inline void board_init(void) {
   DDRG  |= _BV(PG1);
   PORTG |= _BV(PG1);
 }
+
+#  define VCPURUNFLAG_REG PORTA
+#  define VCPURUNFLAG_BIT PA0
+
 
 #elif CONFIG_HARDWARE_VARIANT == 8
 /* ---------- Hardware configuration: petSD ---------- */
@@ -858,28 +771,14 @@ static inline void device_hw_address_init(void) {
   return;
 }
 
-static inline void leds_init(void) {
-  DDRD |= _BV(PD5);
-  DDRD |= _BV(PD6);
-}
-
-static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
-  if (state)
-    PORTD |= _BV(PD5);
-  else
-    PORTD &= (uint8_t) ~_BV(PD5);
-}
-
-static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
-  if (state)
-    PORTD |= _BV(PD6);
-  else
-    PORTD &= (uint8_t) ~_BV(PD6);
-}
-
-static inline void toggle_dirty_led(void) {
-  PIND |= _BV(PD6);
-}
+#  define LED_BUSY_PORT PORTD
+#  define LED_BUSY_DDR DDRD
+#  define LED_BUSY_PIN PD5
+#  define LED_DIRTY_PORT PORTD
+#  define LED_DIRTY_INPUT PIND
+#  define LED_DIRTY_DDR DDRD
+#  define LED_DIRTY_PIN PD6
+#  define LED_ACTIVE_LEVEL 1
 
 #  define HAVE_IEEE
 #  define IEEE_ATN_INT          INT0    /* ATN interrupt (required!) */
@@ -955,17 +854,11 @@ static inline void ieee_interface_init(void) {
   IEEE_DDR_IFC  &= (uint8_t) ~ IEEE_BIT_IFC;        // Define IFC as input
 }
 
-#  define BUTTON_NEXT           _BV(PB1)
-#  define BUTTON_PREV           _BV(PB3)
-
-static inline rawbutton_t buttons_read(void) {
-  return (PINB & (BUTTON_NEXT | BUTTON_PREV));
-}
-
-static inline void buttons_init(void) {
-  DDRB  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
-  PORTB |= BUTTON_NEXT | BUTTON_PREV;
-}
+#  define BUTTONS_PORT PORTB
+#  define BUTTONS_INPUT PINB
+#  define BUTTONS_DDR DDRB
+#  define BUTTONS_NEXT_PIN PB1
+#  define BUTTONS_PREV_PIN PB3
 
 #  define SOFTI2C_PORT          PORTC
 #  define SOFTI2C_PIN           PINC
@@ -1014,28 +907,16 @@ static inline void device_hw_address_init(void) {
   return;
 }
 
-static inline void leds_init(void) {
-  DDRC |= _BV(PC0);  /* busy LED onboard */
-  DDRB |= _BV(PB0);  /* dirty LED extern */
-}
-
-static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
-  if (state)
-    PORTC |= _BV(PC0);
-  else
-    PORTC &= ~_BV(PC0);
-}
-
-static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
-  if (state)
-    PORTB |= _BV(PB0);
-  else
-    PORTB &= ~_BV(PB0);
-}
-
-static inline void toggle_dirty_led(void) {
-  PINB |= _BV(PB0);
-}
+/* busy LED onboard */
+#  define LED_BUSY_PORT PORTC
+#  define LED_BUSY_DDR DDRC
+#  define LED_BUSY_PIN PC0
+/* dirty LED extern */
+#  define LED_DIRTY_PORT PORTB
+#  define LED_DIRTY_INPUT PINB
+#  define LED_DIRTY_DDR DDRB
+#  define LED_DIRTY_PIN PB0
+#  define LED_ACTIVE_LEVEL 1
 
 // dual-interface device, currently only as a compile-time option
 #ifdef CONFIG_HAVE_IEC
@@ -1112,18 +993,11 @@ static inline void ieee_interface_init(void) {
 
 #endif // CONFIG_HAVE_IEEE
 
-#  define BUTTON_NEXT           _BV(PB1)
-#  define BUTTON_PREV           _BV(PB2)
-
-static inline rawbutton_t buttons_read(void) {
-  return (PINB & (BUTTON_NEXT | BUTTON_PREV));
-}
-
-static inline void buttons_init(void) {
-  DDRB &= (uint8_t) ~ (BUTTON_NEXT | BUTTON_PREV);
-  PORTB |= BUTTON_NEXT | BUTTON_PREV;
-}
-
+#  define BUTTONS_PORT PORTB
+#  define BUTTONS_INPUT PINB
+#  define BUTTONS_DDR DDRB
+#  define BUTTONS_NEXT_PIN PB1
+#  define BUTTONS_PREV_PIN PB2
 
 #else
 #  error "CONFIG_HARDWARE_VARIANT is unset or set to an unknown value."
@@ -1140,6 +1014,124 @@ static inline void buttons_init(void) {
 #if defined(CONFIG_HAVE_IEC) && defined(CONFIG_HAVE_IEEE)
 #  error Sorry, dual-interface devices must select only one interface at compile time!
 #endif
+
+/* --- Buttons --- */
+
+/* Button NEXT changes to the next disk image and enables sleep mode (held) */
+#  define BUTTON_NEXT _BV(BUTTONS_NEXT_PIN)
+
+/* Button PREV changes to the previous disk image */
+#  define BUTTON_PREV _BV(BUTTONS_PREV_PIN)
+
+/* Read the raw button state - a depressed button should read as 0 */
+static inline rawbutton_t buttons_read(void) {
+  return BUTTONS_INPUT & (BUTTON_NEXT | BUTTON_PREV);
+}
+
+static inline void buttons_init(void) {
+  BUTTONS_DDR  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
+  BUTTONS_PORT |= BUTTON_NEXT | BUTTON_PREV;
+}
+
+/* --- LEDs --- */
+
+/* Initialize ports for all LEDs */
+static inline void leds_init(void) {
+  /* Note: Depending on the chip and register these lines can compile */
+  /*       to one instruction each on AVR. For two bits this is one   */
+  /*       instruction shorter than "DDRC |= _BV(PC0) | _BV(PC1);"    */
+  LED_BUSY_DDR |= _BV(LED_BUSY_PIN);      /* Port pin set to OUTPUT */
+#ifdef LED_DIRTY_PIN
+  LED_DIRTY_DDR |= _BV(LED_DIRTY_PIN);    /* Port pin set to OUTPUT */
+#endif
+
+// VCPU RUN LED, if required, set output level to required value.
+// For LED ON/OFF, set pin direction to OUT/IN.
+#ifdef CONFIG_VCPUSUPPORT
+#  ifdef VCPURUNFLAG_PORT
+#    if (LED_ACTIVE_LEVEL == 1)
+  VCPURUNFLAG_PORT |= _BV(VCPURUNFLAG_BIT);
+#    else
+  VCPURUNFLAG_PORT &= ~(_BV(VCPURUNFLAG_BIT));
+#    endif
+#  endif
+#endif
+}
+
+#ifndef SINGLE_LED
+/* --- "BUSY" led, recommended color: green (usage similiar to 1541 LED) --- */
+static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
+  if (state)
+#if (LED_ACTIVE_LEVEL == 1)
+    LED_BUSY_PORT |= _BV(LED_BUSY_PIN);
+#else
+    LED_BUSY_PORT &= ~_BV(LED_BUSY_PIN);
+#endif
+  else
+#if (LED_ACTIVE_LEVEL == 1)
+    LED_BUSY_PORT &= ~_BV(LED_BUSY_PIN);
+#else
+    LED_BUSY_PORT |= _BV(LED_BUSY_PIN);
+#endif
+}
+
+/* --- "DIRTY" led, recommended color: red (errors, unwritten data in memory) --- */
+static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
+  if (state)
+#if (LED_ACTIVE_LEVEL == 1)
+    LED_DIRTY_PORT |= _BV(LED_DIRTY_PIN);
+#else
+    LED_DIRTY_PORT &= ~_BV(LED_DIRTY_PIN);
+#endif
+  else
+#if (LED_ACTIVE_LEVEL == 1)
+    LED_DIRTY_PORT &= ~_BV(LED_DIRTY_PIN);
+#else
+    LED_DIRTY_PORT |= _BV(LED_DIRTY_PIN);
+#endif
+}
+
+/* Toggle function used for error blinking */
+static inline void toggle_dirty_led(void) {
+  /* Sufficiently new AVR cores have a toggle function */
+  LED_DIRTY_INPUT |= _BV(LED_DIRTY_PIN);      /* Compiler optimized to SBI instruction, no IN/ORI/OUT */
+}
+#endif
+
+/* Functions for one-LED hardwares: */
+#ifdef SINGLE_LED
+static inline __attribute__((always_inline)) void set_led(uint8_t state) {
+  if (state)
+#  if (LED_ACTIVE_LEVEL == 1)
+    LED_BUSY_PORT |= _BV(LED_BUSY_PIN);
+#  else
+    LED_BUSY_PORT &= ~_BV(LED_BUSY_PIN);
+#  endif
+  else
+#  if (LED_ACTIVE_LEVEL == 1)
+    LED_BUSY_PORT &= ~_BV(LED_BUSY_PIN);
+#  else
+    LED_BUSY_PORT |= _BV(LED_BUSY_PIN);
+#  endif
+}
+
+static inline void toggle_led(void) {
+  LED_BUSY_INPUT |= _BV(LED_BUSY_PIN);
+}
+#endif
+
+
+/* VCPU run flag set/clear */
+/* This function is *NOT* LED-switch only, the bit-value (level) is *NOT* configurabe! */
+#ifdef CONFIG_VCPUSUPPORT
+static inline __attribute__((always_inline)) void set_vcpurunflag(uint8_t state) {
+  if (state)
+    VCPURUNFLAG_REG |= (1 << VCPURUNFLAG_BIT);
+  else
+    VCPURUNFLAG_REG &= ~(1 << VCPURUNFLAG_BIT);
+}
+#endif
+
 
 
 /* --- IEC --- */

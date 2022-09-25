@@ -7,6 +7,10 @@ ifeq ($(CONFIG_HAVE_IEC),y)
   ASMSRC += avr/fastloader-ll.S
 endif
 
+ifeq ($(CONFIG_VCPUSUPPORT),y)
+  ASMSRC += avr/vcpu6502core.S
+endif
+
 ifdef NEED_I2C
   SRC += avr/softi2c.c
 endif
@@ -159,8 +163,20 @@ ARCH_CFLAGS += -fno-split-wide-types
 #ARCH_CFLAGS += -fno-toplevel-reorder
 endif
 
+#---------------- Add own linker script if needed ----------------
+ifeq ($(CONFIG_VCPUSUPPORT),y)
+  ifeq ($(CONFIG_VCPUOPTIMLEVEL),1)
+    ARCH_LDFLAGS += -T scripts/avr/avr51-vcpuoptl_1.xn
+  endif
+  ifeq ($(CONFIG_VCPUOPTIMLEVEL),2)
+    ARCH_LDFLAGS += -T scripts/avr/avr51-vcpuoptl_2.xn
+  endif
+  ifeq ($(CONFIG_VCPUOPTIMLEVEL),3)
+    ARCH_LDFLAGS += -T scripts/avr/avr51-vcpuoptl_3.xn
+  endif
+endif
+
 #---------------- Config ----------------
 ifeq ($(CONFIG_STACK_TRACKING),y)
   ARCH_CFLAGS += -finstrument-functions
 endif
-

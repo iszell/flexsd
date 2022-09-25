@@ -31,6 +31,7 @@
 #include "rtc.h"
 #include "softrtc.h"
 #include "timer.h"
+#include "vcpu6502emu.h"
 
 #define DEBOUNCE_TICKS 4
 #define SLEEP_TICKS    2*HZ
@@ -70,13 +71,17 @@ static void buttons_changed(void) {
 
 /* The main timer interrupt */
 SYSTEM_TICK_HANDLER {
+  ticks++;
+
+#ifdef CONFIG_VCPUSUPPORT
+  if (emucalled != 0) return;
+#endif
+
   rawbutton_t tmp = buttons_read();
 
   if (tmp != buttonstate) {
     buttons_changed();
   }
-
-  ticks++;
 
 #ifdef SINGLE_LED
   if (led_state & LED_ERROR) {

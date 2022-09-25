@@ -57,6 +57,9 @@ uint8_t set_ok_message(buffer_t *buf);
 #define ERROR_SYNTAX_TOOLONG     32
 #define ERROR_SYNTAX_JOKER       33
 #define ERROR_SYNTAX_NONAME      34
+#ifdef CONFIG_VCPUSUPPORT
+#  define ERROR_SYNTAX_VCPU      35
+#endif
 #define ERROR_FILE_NOT_FOUND_39  39
 #define ERROR_RECORD_MISSING     50
 #define ERROR_RECORD_OVERFLOW    51
@@ -77,6 +80,9 @@ uint8_t set_ok_message(buffer_t *buf);
 #define ERROR_PARTITION_ILLEGAL  77
 #define ERROR_BUFFER_TOO_SMALL   78
 #define ERROR_IMAGE_INVALID      79
+#ifdef CONFIG_VCPUSUPPORT
+#  define ERROR_VCPU             97
+#endif
 #define ERROR_UNKNOWN_DRIVECODE  98
 #define ERROR_CLOCK_UNSTABLE     99
 
