@@ -146,16 +146,15 @@ static inline __attribute__((always_inline)) void sdcard2_set_ss(uint8_t state) 
 
 
 /*** Device address selection ***/
-/* device_hw_address() returns the hardware-selected device address */
-static inline uint8_t device_hw_address(void) {
-  return 8 + !(PIND & _BV(PD7)) + 2*!(PIND & _BV(PD5));
-}
-
-/* Configure hardware device address pins */
-static inline void device_hw_address_init(void) {
-  DDRD  &= ~(_BV(PD7) | _BV(PD5));
-  PORTD |=   _BV(PD7) | _BV(PD5);
-}
+/* Device address jumpers/switch port / input configuration */
+#  define DEVICE_HW_ADDR_PORT PORTD
+#  define DEVICE_HW_ADDR_DDR DDRD
+#  define DEVICE_HW_ADDR_PIN PIND
+/* Device address jumpers/switch pins (no. of bits) configuration */
+#  define DEVICE_HW_ADDR_B0 PD7
+#  define DEVICE_HW_ADDR_B1 PD5
+/* If the hardware doesn't have device address jumpers/switches, define default unit no: */
+/* #  define DEVICE_DEFAULT_UNITNO 8 */
 
 
 /*** LEDs ***/
@@ -290,14 +289,11 @@ static inline uint8_t sdcard_wp(void) {
   return PIND & _BV(PD6);
 }
 
-static inline uint8_t device_hw_address(void) {
-  return 8 + !(PIND & _BV(PD7)) + 2*!(PIND & _BV(PD5));
-}
-
-static inline void device_hw_address_init(void) {
-  DDRD  &= ~(_BV(PD7)|_BV(PD5));
-  PORTD |=   _BV(PD7)|_BV(PD5);
-}
+#  define DEVICE_HW_ADDR_PORT PORTD
+#  define DEVICE_HW_ADDR_DDR DDRD
+#  define DEVICE_HW_ADDR_PIN PIND
+#  define DEVICE_HW_ADDR_B0 PD7
+#  define DEVICE_HW_ADDR_B1 PD5
 
 #  define LED_BUSY_PORT PORTC
 #  define LED_BUSY_DDR DDRC
@@ -360,14 +356,11 @@ static inline uint8_t sdcard_wp(void) {
   return PIND & _BV(PD6);
 }
 
-static inline uint8_t device_hw_address(void) {
-  return 8 + !(PINA & _BV(PA2)) + 2*!(PINA & _BV(PA3));
-}
-
-static inline void device_hw_address_init(void) {
-  DDRA  &= ~(_BV(PA2)|_BV(PA3));
-  PORTA |=   _BV(PA2)|_BV(PA3);
-}
+#  define DEVICE_HW_ADDR_PORT PORTA
+#  define DEVICE_HW_ADDR_DDR DDRA
+#  define DEVICE_HW_ADDR_PIN PINA
+#  define DEVICE_HW_ADDR_B0 PA2
+#  define DEVICE_HW_ADDR_B1 PA3
 
 #  define LED_BUSY_PORT PORTA
 #  define LED_BUSY_DDR DDRA
@@ -459,14 +452,8 @@ static inline uint8_t sdcard_wp(void) {
   return PINB & _BV(PB6);
 }
 
-static inline uint8_t device_hw_address(void) {
-  /* No device jumpers on uIEC */
-  return 10;
-}
-
-static inline void device_hw_address_init(void) {
-  return;
-}
+/* No device jumpers on uIEC */
+#  define DEVICE_DEFAULT_UNITNO 10
 
 #  define LED_BUSY_PORT PORTE
 #  define LED_BUSY_INPUT PINE
@@ -591,14 +578,11 @@ static inline __attribute__((always_inline)) void sdcard2_set_ss(uint8_t state) 
     PORTD &= ~_BV(PD3);
 }
 
-static inline uint8_t device_hw_address(void) {
-  return 8 + !(PIND & _BV(PD7)) + 2*!(PIND & _BV(PD5));
-}
-
-static inline void device_hw_address_init(void) {
-  DDRD  &= ~(_BV(PD7)|_BV(PD5));
-  PORTD |=   _BV(PD7)|_BV(PD5);
-}
+#  define DEVICE_HW_ADDR_PORT PORTD
+#  define DEVICE_HW_ADDR_DDR DDRD
+#  define DEVICE_HW_ADDR_PIN PIND
+#  define DEVICE_HW_ADDR_B0 PD7
+#  define DEVICE_HW_ADDR_B1 PD5
 
 #  define LED_BUSY_PORT PORTC
 #  define LED_BUSY_DDR DDRC
@@ -680,14 +664,8 @@ static inline uint8_t sdcard_wp(void) {
   return PINE & _BV(PE2);
 }
 
-static inline uint8_t device_hw_address(void) {
-  /* No device jumpers on uIEC */
-  return 10;
-}
-
-static inline void device_hw_address_init(void) {
-  return;
-}
+/* No device jumpers on uIEC */
+#  define DEVICE_DEFAULT_UNITNO 10
 
 #  define LED_BUSY_PORT PORTG
 #  define LED_BUSY_INPUT PING
@@ -763,13 +741,8 @@ static inline uint8_t sdcard_wp(void) {
   return (PINC & _BV(PC3));
 }
 
-static inline uint8_t device_hw_address(void) {
-  /* No device jumpers on petSD */
-  return 8;
-}
-static inline void device_hw_address_init(void) {
-  return;
-}
+/* No device jumpers on petSD */
+#  define DEVICE_DEFAULT_UNITNO 8
 
 #  define LED_BUSY_PORT PORTD
 #  define LED_BUSY_DDR DDRD
@@ -898,14 +871,8 @@ static inline uint8_t sdcard_wp(void) {
   return 0;
 }
 
-static inline uint8_t device_hw_address(void) {
-  /* No device jumpers on XS-1541 */
-  return 8;
-}
-
-static inline void device_hw_address_init(void) {
-  return;
-}
+/* No device jumpers on XS-1541 */
+#  define DEVICE_DEFAULT_UNITNO 8
 
 /* busy LED onboard */
 #  define LED_BUSY_PORT PORTC
@@ -1033,6 +1000,31 @@ static inline void buttons_init(void) {
   BUTTONS_PORT |= BUTTON_NEXT | BUTTON_PREV;
 }
 
+
+
+/* --- Device address functions --- */
+
+#ifdef DEVICE_DEFAULT_UNITNO
+/* Devices without address jumpers/switches: */
+static inline uint8_t device_hw_address(void) {
+  return DEVICE_DEFAULT_UNITNO;
+}
+static inline void device_hw_address_init(void) {
+  return;
+}
+#else
+/* device_hw_address() returns the hardware-selected device address */
+static inline uint8_t device_hw_address(void) {
+  return 8 + !(DEVICE_HW_ADDR_PIN & _BV(DEVICE_HW_ADDR_B0)) + 2*!(DEVICE_HW_ADDR_PIN & _BV(DEVICE_HW_ADDR_B1));
+}
+/* Configure hardware device address pins */
+static inline void device_hw_address_init(void) {
+  DEVICE_HW_ADDR_DDR  &= ~(_BV(DEVICE_HW_ADDR_B0) | _BV(DEVICE_HW_ADDR_B1));
+  DEVICE_HW_ADDR_PORT |=   _BV(DEVICE_HW_ADDR_B0) | _BV(DEVICE_HW_ADDR_B1);
+}
+#endif
+
+
 /* --- LEDs --- */
 
 /* Initialize ports for all LEDs */
@@ -1119,6 +1111,7 @@ static inline void toggle_led(void) {
   LED_BUSY_INPUT |= _BV(LED_BUSY_PIN);
 }
 #endif
+
 
 
 /* VCPU run flag set/clear */

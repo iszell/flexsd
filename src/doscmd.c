@@ -2173,11 +2173,12 @@ static void parse_zcommands(void) {
     }
 #endif
     case 'I': {           /* Return informations */
-      *ptr++ = VCPU_VERSION | (VCPU_BUSTYPE << 5);    // This BYTE is NOT 0x33 (ascii number)
+      *ptr++ = VCPU_VERSION | (VCPU_BUSTYPE << 5);    // This BYTE is NOT 0x33 (ascii number: "3")
       *ptr++ = CONFIG_COMMAND_BUFFER_SIZE;
       *ptr++ = CONFIG_ERROR_BUFFER_SIZE;
       *ptr++ = CONFIG_BUFFER_COUNT;
-      buffers[ERRORBUFFER_IDX].lastused = 3;
+      *ptr++ = VCPU_MAXIO_MASK;
+      buffers[ERRORBUFFER_IDX].lastused = 4;
       break;
     }
 #ifdef VCPUDEBUG_EN

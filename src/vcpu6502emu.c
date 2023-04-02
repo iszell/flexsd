@@ -44,6 +44,7 @@ Tcpureg vcpuregs;
 Tploaderdatas plparams;
 volatile uint8_t emucalled;
 volatile uint8_t interruptcode;
+uint8_t b2decimal[3];
 
 #ifdef VCPUDEBUG_EN
 extern uint8_t _end;

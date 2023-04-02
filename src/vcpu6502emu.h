@@ -60,8 +60,10 @@
 #define VCPU_VERSION 0x01
 #define VCPU_INTERFACE_IEEE 1
 #define VCPU_INTERFACE_CBMSER 2
-#define VCPU_INTERFACE_CBMSER_FS 3
-#define VCPU_INTERFACE_TCBM 4
+#define VCPU_INTERFACE_CBMFASTSER 3
+#define VCPU_INTERFACE_CBMSERPAR 4
+#define VCPU_INTERFACE_CBMFASTSERPAR 5
+#define VCPU_INTERFACE_TCBM 6
 
 #ifdef CONFIG_HAVE_IEEE
   #define VCPU_BUSTYPE VCPU_INTERFACE_IEEE
@@ -105,6 +107,7 @@ extern Tcpureg vcpuregs;
 extern Tploaderdatas plparams;
 extern volatile uint8_t emucalled;
 extern volatile uint8_t interruptcode;
+extern uint8_t b2decimal[3];
 
 void vcpu6502emu(void);
 void vcpu6502core(void);
@@ -126,7 +129,6 @@ void vcpu6502core(void);
 #define VCPU_ADDR_COMMANDBUFFER 0xfc00
 #define VCPU_ADDR_ERRORBUFFER 0xfd00
 #define VCPU_ADDR_IO 0xfe00
-#define VCPU_MAXIO_MASK 0x0f
 
 .extern device_address;
 .extern bufferdata;
@@ -136,4 +138,8 @@ void vcpu6502core(void);
 .extern interruptcode;
 
 #endif        /* ASSEMBLER */
+
+#define VCPU_MAXIO_ADDRBITS 4
+#define VCPU_MAXIO_MASK ((1<<VCPU_MAXIO_ADDRBITS)-1)
+
 #endif

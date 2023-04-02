@@ -354,7 +354,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 
 		rjmp	instr_cpx_am3		;$E0: CPX #$gh
 		rjmp	instr_sbc_am1		;$E1: SBC ($zp,X)
-		rjmp	einstr_btasc		;$E2: (IOp) BTASC
+		rjmp	ninstr_hangup		;$E2: (IOp) (deprecated BTASC)
 		rjmp	uinstr_op_0xe3		;$E3: (IOp) USND2
 		rjmp	instr_cpx_am2		;$E4: CPX $zp
 		rjmp	instr_sbc_am2		;$E5: SBC $zp
@@ -389,16 +389,16 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 ;	I/O decoder tables, followed the instructions decoder table:
 ;	I/O Read routines:
 readiotable:	rjmp	readio_version		;$00: VCPU version + bus type
-		rjmp	readio_deviceaddress	;$01: Device address (8, 9, 10, 11)
+		rjmp	readio_memiosize	;$01: MEM + I/O area size
 		rjmp	readio_hidbits		;$02: HID + LEDs
-		rjmp	readio_hostspd		;$03: Host CPU speed
-		rjmp	readio_checkfw		;$04:
-#if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
-		rjmp	readio_na		;$05:
+		rjmp	readio_deviceaddress	;$03: Device address (8, 9, 10, 11)
+		rjmp	readio_hostspd		;$04: Host CPU speed
+		rjmp	readio_checkfw		;$05:
 		rjmp	readio_na		;$06:
-		rjmp	readio_na		;$07:
-		rjmp	readio_na		;$08:
-		rjmp	readio_na		;$09:
+		rjmp	readio_decimallow	;$07: Binary to decimal converter: result Low digit
+		rjmp	readio_decimalmid	;$08: Binary to decimal converter: result Mid digit
+		rjmp	readio_decimalhigh	;$09: Binary to decimal converter: result High digit
+#if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
 		rjmp	readio_cbmseraso	;$0A: ATN/SRQ Lines Output register read (B7=ATN, B6=SRQ)
 		rjmp	readio_cbmserasi	;$0B: ATN/SRQ Lines read back (B7=ATN, B6=SRQ)
 		rjmp	readio_cbmserdco	;$0C: DAT/CLK Lines output register read (B1=DAT, B0=CLK)
@@ -406,11 +406,6 @@ readiotable:	rjmp	readio_version		;$00: VCPU version + bus type
 		rjmp	readio_cbmserci		;$0E: CLK Line read back (B7=CLK)
 		rjmp	readio_cbmserdi		;$0F: DAT Line read back (B7=DAT)
 #else
-		rjmp	readio_na		;$05:
-		rjmp	readio_na		;$06:
-		rjmp	readio_na		;$07:
-		rjmp	readio_na		;$08:
-		rjmp	readio_na		;$09:
 		rjmp	readio_na		;$0A:
 		rjmp	readio_na		;$0B:
 		rjmp	readio_na		;$0C:
@@ -424,12 +419,12 @@ writeiotable:	rjmp	writeio_na		;$00:
 		rjmp	writeio_hidbits		;$02: LEDs
 		rjmp	writeio_na		;$03:
 		rjmp	writeio_na		;$04:
-#if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
 		rjmp	writeio_na		;$05:
 		rjmp	writeio_na		;$06:
-		rjmp	writeio_na		;$07:
-		rjmp	writeio_na		;$08:
+		rjmp	writeio_convbin2dec	;$07: Binary to decimal converter: convert to decimal
+		rjmp	writeio_convbin2asc	;$08: Binary to decimal converter: convert to ascii
 		rjmp	writeio_na		;$09:
+#if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
 		rjmp	writeio_cbmseraso	;$0A: ATN/SRQ Lines Output register write (B7=ATN, B6=SRQ)
 		rjmp	writeio_na		;$0B:
 		rjmp	writeio_cbmserdco	;$0C: DAT/CLK Lines output register write (B1=DAT, B0=CLK)
@@ -437,11 +432,6 @@ writeiotable:	rjmp	writeio_na		;$00:
 		rjmp	writeio_cbmserco	;$0E: CLK Line write (CLK=B0)
 		rjmp	writeio_cbmserdo	;$0F: DAT Line write (DAT=B0)
 #else
-		rjmp	writeio_na		;$05:
-		rjmp	writeio_na		;$06:
-		rjmp	writeio_na		;$07:
-		rjmp	writeio_na		;$08:
-		rjmp	writeio_na		;$09:
 		rjmp	writeio_na		;$0A:
 		rjmp	writeio_na		;$0B:
 		rjmp	writeio_na		;$0C:
@@ -1263,7 +1253,7 @@ instr_pha:
 #endif
 		st	R_CADDR,R_A			;2
 		dec	R_SP				;1
-		rjmp	decode_fetch			;2+n
+		rjmp	decode_fetch			;2+n	12 Clk "1.5T"
 ;	PLA:
 instr_pla:	inc	R_SP				;1
 #ifndef CPUMEMORYALIGNED
@@ -1272,7 +1262,14 @@ instr_pla:	inc	R_SP				;1
 		calcmaddr_stack				;1
 #endif
 		ld	R_A,R_CADDR			;2
+#ifdef INSTRTABLEALIGNED
+		mov	R_S_Z,R_A			;1
+		mov	R_S_N,R_S_Z			;1	12 Clk "1.5T"
+		opcodefetchcall				;	Fetch next opcode, execute (4(7)+2)
+#else
 		rjmp	decode_setnz_a			;4+n
+#endif
+
 ;	PHP:
 instr_php:	rcall	movezn_to_sreg			;3+11
 #ifndef CPUMEMORYALIGNED
@@ -1332,22 +1329,6 @@ einstr_sph:	cpi	R_TEMP,CONFIG_BUFFER_COUNT	;1
 
 ;	Address error:
 einstr_error:	rjmp	instr_branch_e
-
-;	BTASC: (Convert binary to ASCII decimal number: A (0..$ff) => Y:X:A ("000".."255")
-einstr_btasc:	ldi	R_X,'0'
-		ldi	R_Y,'0'
-1:		cpi	R_A,100
-		brcs	2f
-		inc	R_Y
-		subi	R_A,100
-		rjmp	1b
-2:		cpi	R_A,10
-		brcs	3f
-		inc	R_X
-		subi	R_A,10
-		rjmp	2b
-3:		ori	R_A,'0'
-		rjmp	decode_fetch			;2+n
 
 ;=============================================
 ;===	µOp instructions:
@@ -2062,38 +2043,47 @@ checkaddr_bufs:	cpi	R_CADDRH,(VCPU_ADDR_COMMANDBUFFER >> 8)	;1	Command buffer?
 ;=============================================
 ;===	I/O routines:
 ;===	Readable registers:
-readio_version:	ldi	R_TEMP,VCPU_VERSION | (VCPU_BUSTYPE << 5)
+readio_version:	ldi	R_TEMP,(VCPU_BUSTYPE<<5)|VCPU_VERSION
 		rjmp	readio_common
-readio_deviceaddress:
-		lds	R_TEMP,device_address
+
+readio_memiosize:
+		ldi	R_TEMP,((VCPU_MAXIO_ADDRBITS-1)<<5)|CONFIG_BUFFER_COUNT	;I/O area ~size (B765) + RAM size (B43210)
 		rjmp	readio_common
 
 readio_hidbits:	clr	R_TEMP
-		in	R_TEMP2,_SFR_IO_ADDR(LED_BUSY_PORT)
-		bst	R_TEMP2,LED_BUSY_PIN
-		bld	R_TEMP,0
-#ifndef SINGLE_LED
-		in	R_TEMP2,_SFR_IO_ADDR(LED_DIRTY_PORT)
-		bst	R_TEMP2,LED_DIRTY_PIN
+#if LED_ACTIVE_LEVEL == 1
+		sbic	_SFR_IO_ADDR(LED_BUSY_PORT),LED_BUSY_PIN
+		ori	R_TEMP,0b00000001
+  #ifndef SINGLE_LED
+		sbic	_SFR_IO_ADDR(LED_DIRTY_PORT),LED_DIRTY_PIN
+		ori	R_TEMP,0b00000010
+  #endif
 #else
-  #if LED_ACTIVE_LEVEL == 1
-		clt
-  #else
-		set
+		sbis	_SFR_IO_ADDR(LED_BUSY_PORT),LED_BUSY_PIN
+		ori	R_TEMP,0b00000001
+  #ifndef SINGLE_LED
+		sbis	_SFR_IO_ADDR(LED_DIRTY_PORT),LED_DIRTY_PIN
+		ori	R_TEMP,0b00000010
   #endif
 #endif
-		bld	R_TEMP,1
-		in	R_TEMP2,_SFR_IO_ADDR(BUTTONS_INPUT)
-		bst	R_TEMP2,BUTTONS_PREV_PIN
-		bld	R_TEMP,6
-		bst	R_TEMP2,BUTTONS_NEXT_PIN
-		bld	R_TEMP,7
-#if LED_ACTIVE_LEVEL == 1
-		ldi	R_TEMP2,0xc0
-#else
-		ldi	R_TEMP2,0xc3
+#ifdef CONFIG_REMOTE_DISPLAY
+		sbis	_SFR_IO_ADDR(SOFTI2C_PIN),SOFTI2C_BIT_INTRQ
+		ori	R_TEMP,0b00100000
 #endif
-		eor	R_TEMP,R_TEMP2
+		sbis	_SFR_IO_ADDR(BUTTONS_INPUT),BUTTONS_PREV_PIN
+		ori	R_TEMP,0b01000000
+		sbis	_SFR_IO_ADDR(BUTTONS_INPUT),BUTTONS_NEXT_PIN
+		ori	R_TEMP,0b10000000
+		rjmp	readio_common
+
+readio_deviceaddress:
+		lds	R_TEMP,device_address
+#ifndef DEVICE_DEFAULT_UNITNO
+		sbis	_SFR_IO_ADDR(DEVICE_HW_ADDR_PIN),DEVICE_HW_ADDR_B0
+		ori	R_TEMP,0b01000000
+		sbis	_SFR_IO_ADDR(DEVICE_HW_ADDR_PIN),DEVICE_HW_ADDR_B1
+		ori	R_TEMP,0b10000000
+#endif
 		rjmp	readio_common
 
 readio_hostspd:	ldi	R_TEMP,CONFIG_MCU_FREQ/1000000		;Host Speed in MHz
@@ -2103,46 +2093,60 @@ readio_checkfw:	mov	R_TEMP,R_INSTRTL
 		or	R_TEMP,R_RAML
 		rjmp	readio_common
 
+;	Binary to Decimal converter, result registers:
+;	Low digit:
+readio_decimallow:
+		lds	R_TEMP,b2decimal+0
+		rjmp	readio_common
+;	Mid digit:
+readio_decimalmid:
+		lds	R_TEMP,b2decimal+1
+		rjmp	readio_common
+;	High digit:
+readio_decimalhigh:
+		lds	R_TEMP,b2decimal+2
+		rjmp	readio_common
+
 #if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
 ;	ATN/SRQ lines output register read:
 readio_cbmseraso:
 		clr	R_TEMP					;1
-#ifdef IEC_OUTPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_ATN	;1/2/3
-#else
-		sbic	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_ATN	;1/2/3
-#endif
-		ori	R_TEMP,0x80				;1
-#ifdef SRQHANDLE
   #ifdef IEC_OUTPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_SRQ	;1/2/3
+		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_ATN	;1/2/3
   #else
-		sbic	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_SRQ	;1/2/3
+		sbic	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_ATN	;1/2/3
   #endif
-#else
+		ori	R_TEMP,0x80				;1
+  #ifdef SRQHANDLE
+    #ifdef IEC_OUTPUTS_INVERTED
+		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_SRQ	;1/2/3
+    #else
+		sbic	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_SRQ	;1/2/3
+    #endif
+  #else
 		nop						;1
-#endif
+  #endif
 		ori	R_TEMP,0x40				;1
 		movw	R_IR,R_INSTRT				;1
 		ret						;4
 ;	ATN/SRQ Lines read back:
 readio_cbmserasi:
 		clr	R_TEMP					;1
-#ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_ATN	;1/2/3
-#else
-		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_ATN	;1/2/3
-#endif
-		ori	R_TEMP,0x80				;1
-;#ifdef SRQHANDLE
   #ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_SRQ	;1/2/3
+		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_ATN	;1/2/3
   #else
-		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_SRQ	;1/2/3
+		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_ATN	;1/2/3
   #endif
-;#else
-;		nop						;1
-;#endif
+		ori	R_TEMP,0x80				;1
+  ;#ifdef SRQHANDLE
+    #ifdef IEC_INPUTS_INVERTED
+		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_SRQ	;1/2/3
+    #else
+		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_SRQ	;1/2/3
+    #endif
+  ;#else
+  ;		nop						;1
+  ;#endif
 		ori	R_TEMP,0x40
 		movw	R_IR,R_INSTRT				;1
 		ret						;4
@@ -2150,17 +2154,17 @@ readio_cbmserasi:
 ;	DAT/CLK Lines output register read (B1=DAT, B0=CLK)
 readio_cbmserdco:
 		ldi	R_TEMP,0x03				;1
-#ifdef IEC_OUTPUTS_INVERTED
+  #ifdef IEC_OUTPUTS_INVERTED
 		sbic	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_CLOCK	;1/2/3
-#else
+  #else
 		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_CLOCK	;1/2/3
-#endif
+  #endif
 		andi	R_TEMP,0xaa				;1
-#ifdef IEC_OUTPUTS_INVERTED
+  #ifdef IEC_OUTPUTS_INVERTED
 		sbic	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_DATA	;1/2/3
-#else
+  #else
 		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_DATA	;1/2/3
-#endif
+  #endif
 		andi	R_TEMP,0x55				;1
 		movw	R_IR,R_INSTRT				;1
 		ret						;4
@@ -2169,17 +2173,17 @@ readio_cbmserdco:
 readio_cbmserin:
 		ldi	R_TEMP,0xc0				;1
 		in	R_TEMP2,_SFR_IO_ADDR(IEC_INPUT)		;1
-#ifdef IEC_INPUTS_INVERTED
+  #ifdef IEC_INPUTS_INVERTED
 		sbrc	R_TEMP2,IEC_PIN_CLOCK			;1/2/3
-#else
+  #else
 		sbrs	R_TEMP2,IEC_PIN_CLOCK			;1/2/3
-#endif
+  #endif
 		andi	R_TEMP,0xaa				;1
-#ifdef IEC_INPUTS_INVERTED
+  #ifdef IEC_INPUTS_INVERTED
 		sbrc	R_TEMP2,IEC_PIN_DATA			;1/2/3
-#else
+  #else
 		sbrs	R_TEMP2,IEC_PIN_DATA			;1/2/3
-#endif
+  #endif
 		andi	R_TEMP,0x55				;1
 		movw	R_IR,R_INSTRT				;1
 		ret						;4
@@ -2187,11 +2191,11 @@ readio_cbmserin:
 ;	CLK Line read back (B7=CLK)
 readio_cbmserci:
 		ldi	R_TEMP,0x80				;1
-#ifdef IEC_INPUTS_INVERTED
+  #ifdef IEC_INPUTS_INVERTED
 		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_CLOCK	;1/2/3
-#else
+  #else
 		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_CLOCK	;1/2/3
-#endif
+  #endif
 		ldi	R_TEMP,0x00				;1	CLK line low
 		movw	R_IR,R_INSTRT				;1
 		ret						;4
@@ -2199,11 +2203,11 @@ readio_cbmserci:
 ;	DAT Line read back (B7=DAT)
 readio_cbmserdi:
 		ldi	R_TEMP,0x80				;1
-#ifdef IEC_INPUTS_INVERTED
+  #ifdef IEC_INPUTS_INVERTED
 		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_DATA	;1/2/3
-#else
+  #else
 		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_DATA	;1/2/3
-#endif
+  #endif
 		ldi	R_TEMP,0x00				;1	CLK line low
 		movw	R_IR,R_INSTRT				;1
 		ret						;4
@@ -2246,33 +2250,60 @@ writeio_hidbits:
 #endif
 		rjmp	writeio_na				;3+n
 
+;	Convert binary to decimal numbers: A (0..$ff) => high:mid:low (000..255)
+;	Bin to Dec:
+writeio_convbin2dec:
+		ldi	R_TEMP2,0x00
+		rjmp	1f
+;	Bin to Ascii:
+writeio_convbin2asc:
+		ldi	R_TEMP2,'0'
+1:		mov	R_CADDRL,R_TEMP2
+		mov	R_CADDRH,R_TEMP2
+
+2:		cpi	R_TEMP,100
+		brcs	3f
+		inc	R_CADDRH
+		subi	R_TEMP,100
+		rjmp	2b
+3:		cpi	R_TEMP,10
+		brcs	4f
+		inc	R_CADDRL
+		subi	R_TEMP,10
+		rjmp	3b
+4:		or	R_TEMP2,R_TEMP
+		sts	b2decimal+2,R_CADDRH
+		sts	b2decimal+1,R_CADDRL
+		sts	b2decimal+0,R_TEMP2
+		rjmp	writeio_na
+
 #if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
 ;	ATN/SRQ lines output register write:
 writeio_cbmseraso:
-#ifdef IEC_OUTPUTS_INVERTED
+  #ifdef IEC_OUTPUTS_INVERTED
 		com	R_TEMP					;1
-#else
+  #else
 		nop						;1
-#endif
+  #endif
 		in	R_TEMP2,_SFR_IO_ADDR(IEC_OUTPUT)	;1
 		bst	R_TEMP,7				;1
 		bld	R_TEMP2,IEC_OPIN_ATN			;1
 		bst	R_TEMP,6				;1
-#ifdef SRQHANDLE
+  #ifdef SRQHANDLE
 		bld	R_TEMP2,IEC_OPIN_SRQ			;1
-#else
+  #else
 		nop						;1
-#endif
+  #endif
 		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2	;1
 		rjmp	writeio_na				;3+n
 
 ;	DAT/CLK Lines output register write (B1=DAT, B0=CLK)
 writeio_cbmserdco:
-#ifdef IEC_OUTPUTS_INVERTED
+  #ifdef IEC_OUTPUTS_INVERTED
 		com	R_TEMP					;1
-#else
+  #else
 		nop						;1
-#endif
+  #endif
 		in	R_TEMP2,_SFR_IO_ADDR(IEC_OUTPUT)	;1
 		bst	R_TEMP,0				;1
 		bld	R_TEMP2,IEC_OPIN_CLOCK			;1
@@ -2283,32 +2314,31 @@ writeio_cbmserdco:
 
 ;	CLK Line write (CLK=B0)
 writeio_cbmserco:
+  #ifdef IEC_OUTPUTS_INVERTED
+		com	R_TEMP					;1
+  #else
+		nop						;1
+  #endif
 		bst	R_TEMP,0				;1
 		in	R_TEMP2,_SFR_IO_ADDR(IEC_OUTPUT)	;1
-		andi	R_TEMP2,~(1 << IEC_OPIN_CLOCK)		;1
-#ifdef IEC_OUTPUTS_INVERTED
-		brts	1f					;1/2
-#else
-		brtc	1f					;1/2
-#endif
-		ori	R_TEMP2,(1 << IEC_OPIN_CLOCK)		;1
-1:		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2	;1
+		bld	R_TEMP2,IEC_OPIN_CLOCK			;1
+		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2	;1
 		rjmp	writeio_na				;3+n
 
 ;	DAT Line write (DAT=B0)
 writeio_cbmserdo:
+  #ifdef IEC_OUTPUTS_INVERTED
+		com	R_TEMP					;1
+  #else
+		nop						;1
+  #endif
 		bst	R_TEMP,0				;1
 		in	R_TEMP2,_SFR_IO_ADDR(IEC_OUTPUT)	;1
-		andi	R_TEMP2,~(1 << IEC_OPIN_DATA)		;1
-#ifdef IEC_OUTPUTS_INVERTED
-		brts	1f					;1/2
-#else
-		brtc	1f					;1/2
-#endif
-		ori	R_TEMP2,(1 << IEC_OPIN_DATA)		;1
-1:		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2	;1
+		bld	R_TEMP2,IEC_OPIN_DATA			;1
+		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2	;1
 		rjmp	writeio_na				;3+n
-#endif
+
+#endif	// CBM Serial lines I/O
 
 ;	Unimplemented register write, no function:
 writeio_na:	movw	R_IR,R_INSTRT				;1
