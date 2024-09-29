@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -71,12 +71,23 @@ typedef enum { PARALLEL_DIR_IN = 0,
 uint8_t parallel_read(void);
 void parallel_write(uint8_t value);
 void parallel_send_handshake(void);
+void parallel_sethiz_handshake(void);
 
 #ifdef HAVE_PARALLEL
 void parallel_set_dir(parallel_dir_t direction);
 #else
 # define parallel_set_dir(x) do {} while (0)
 #endif
+
+  #if CONFIG_FASTSERIAL_MODE >= 1
+void fastser_recven(void);
+void fastser_recvdis(void);
+void fastser_sendbyte_vcpu(uint8_t byte);
+    #if CONFIG_FASTSERIAL_MODE >= 2
+void fastser_sendbyte(uint8_t byte);
+int16_t fastser_recvbyte(void);
+    #endif
+  #endif
 
 #endif
 

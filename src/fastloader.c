@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
    Final Cartridge III, DreamLoad, ELoad fastloader support:
    Copyright (C) 2008-2011  Thomas Giesel <skoe@directbox.com>
    Nippon Loader support:
@@ -38,7 +38,7 @@
 #include "timer.h"
 #include "fastloader.h"
 
-uint8_t detected_loader;
+fastloaderid_t detected_loader;
 
 /* Function pointer to the current byte transmit/receive functions */
 /* (to simplify loaders with multiple variations of these)         */

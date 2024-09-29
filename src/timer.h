@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -38,6 +38,8 @@
 #define KEY_DISPLAY (1<<4)
 
 #define IGNORE_KEYS (1<<7)
+
+extern volatile rawbutton_t buttonstate;
 
 /// Logical keys that were pressed - must be reset by the reader.
 extern volatile uint8_t active_keys;
@@ -82,12 +84,24 @@ static inline tick_t getticks(void) {
  * wouldn't care). Gcc is currently neither.
  * (">=0" refers to the time_after_eq macro which wasn't copied)
  */
-#define time_after(a,b)         \
-         ((stick_t)(b) - (stick_t)(a) < 0)
+
+//#define time_after(a,b) ((stick_t)(b) - (stick_t)(a) < 0)
+
+/* The above definition works incorrectly (?) with AVR-GCC 11(+) versions.
+   (This function compares times, and the incorrect result produces random timeouts.)
+   The definitions below generate the same code as the definition above
+   with earlier versions of AVR-GCC. / balagesz */
+
+/* This definition works good, but this may also depend (?) on compiler implementation: */
+//#define time_after(a,b) ((stick_t)((tick_t)(b) - (tick_t)(a)) < 0)
+
+/* This definition works with the right logic, and perhaps implementation-independent: */
+#define time_after(a,b) ((((tick_t)(b) - (tick_t)(a)) & (1 << ((8*sizeof(tick_t))-1))) != 0)
+
 #define time_before(a,b)        time_after(b,a)
 
 
-/* Timer initialisation - defined in $ARCH/timer-init.c */
+/* Timer initialisation - defined in $ARCH/arch-timer.c */
 void timer_init(void);
 void timer_enable(void);
 void timer_disable(void);

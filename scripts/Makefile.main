@@ -2,13 +2,14 @@
 
 # Define version number
 MAJOR = 1
-MINOR = 1
+MINOR = 3
 PATCHLEVEL = 0
 FIX =
 
 # Forces bootloader version to 0, comment out or leave empty for release
-#PRERELEASE = atentdead0
-PRERELEASE =  rc2
+# ### FlexSD fw: based on "1.0.0atentdead0-36-g7e7be29", 2023-01-19
+#PRERELEASE = atentdead0-36-g7e7be29
+PRERELEASE =  fspp0
 
 #----------------------------------------------------------------------------
 # WinAVR Makefile Template written by Eric B. Weddington, Joerg Wunsch, et al.
@@ -51,7 +52,7 @@ TARGET = $(OBJDIR)/flexsd
 
 # List C source files here. (C dependencies are automatically generated.)
 SRC  = buffers.c fatops.c fileops.c main.c errormsg.c
-SRC += doscmd.c ff.c d64ops.c diskchange.c
+SRC += doscmd.c burstcmd.c ff.c d64ops.c diskchange.c
 SRC += eeprom-conf.c parser.c utils.c led.c diskio.c
 SRC += timer.c $(CONFIG_ARCH)/arch-timer.c $(CONFIG_ARCH)/spi.c
 SRC += $(CONFIG_ARCH)/system.c
@@ -219,7 +220,7 @@ include scripts/$(CONFIG_ARCH)/variables.mk
 CFLAGS = -g$(DEBUG)
 CFLAGS += $(CDEFS)
 CFLAGS += -O$(OPT) -fno-strict-aliasing
-CFLAGS += -Wall -Wstrict-prototypes -Werror
+CFLAGS += -Wall -Wstrict-prototypes -Werror -Wextra
 #CFLAGS += -Wa,-adhlns=$(OBJDIR)/$(<:.c=.lst)
 CFLAGS += -I$(OBJDIR) -Isrc -Isrc/$(CONFIG_ARCH)
 CFLAGS += $(patsubst %,-I%,$(EXTRAINCDIRS))
@@ -230,6 +231,9 @@ ifdef NEED_I2C
   CFLAGS += -DHAVE_I2C
 endif
 
+# Add arch-specific CFLAGS:
+CFLAGS += $(XCFLAGS)
+
 #---------------- Assembler Options ----------------
 #  -Wa,...:   tell GCC to pass this to the assembler.
 #  -ahlms:    create listing
@@ -237,7 +241,8 @@ endif
 #             for use in COFF files, additional information about filenames
 #             and function names needs to be present in the assembler source
 #             files -- see avr-libc docs [FIXME: not yet described there]
-ASFLAGS = -Wa,-gstabs -I$(OBJDIR) -Isrc -Isrc/$(CONFIG_ARCH)
+#ASFLAGS = -Wa,-gstabs -I$(OBJDIR) -Isrc -Isrc/$(CONFIG_ARCH)
+ASFLAGS = -Wa,-gdwarf-2 -I$(OBJDIR) -Isrc -Isrc/$(CONFIG_ARCH)
 
 
 #---------------- Linker Options ----------------

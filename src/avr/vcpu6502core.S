@@ -5,7 +5,7 @@
 
    FAT filesystem access based on code from ChaN, see tff.c|h.
 
-   Virtual 6502 CPU (VCPU) emulation by balagesz, (C) 2021
+   Virtual 6502 CPU (VCPU) emulation by balagesz, (C) 2021+
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -34,11 +34,200 @@
   .section .vcpu6502early
 #endif
 
+;=============================================
+;===	6502 emulation entry:
+
+;   From avr-gcc wiki:
+;	R18–R27, R30, R31
+;	  These GPRs are call clobbered. An ordinary function may use them
+;	  without restoring the contents.
+;	R0, T-Flag
+;	  The temporary register and the T-flag in SREG are also call-clobbered,
+;	  but this knowledge is not exposed explicitly to the compiler (R0 is a fixed register). 
+;
+;	R2–R17, R28, R29
+;	  The remaining GPRs are call-saved, i.e. a function that uses such a registers
+;	  must restore its original content. This applies even if the register is used
+;	  to pass a function argument. 
+;	R1
+;	  The zero-register is implicity call-saved (implicit because R1 is a fixed register). 
+
+;===
+;	For now, it remains to save/restore all registers. (Compiler ABI change does not
+;	  affect the run.) This may change in the future due to optimization.
+;===
+
+  .global vcpu6502core
+
+vcpu6502core:	push	R_USER1L			;R2
+		push	R_USER1H			;R3
+		push	R_USER2L			;R4
+		push	R_USER2H			;R5
+		push	R_USERRETL			;R6
+		push	R_USERRETH			;R7
+		push	R_RAML				;R8
+		push	R_RAMH				;R9
+		push	R_SAVEADDRL			;R10
+		push	R_SAVEADDRH			;R11
+#ifndef CPUMEMORYALIGNED
+		push	R_ZPL				;R12
+#endif
+		push	R_ZPH				;R13
+		push	R_S_Z				;R14
+		push	R_S_N				;R15
+		push	R_A				;R16
+		push	R_X				;R17
+		push	R_Y				;R18		|
+		push	R_SR				;R19		|
+#ifndef CPUMEMORYALIGNED
+		push	R_SPL				;R20		|
+#endif
+		push	R_SPH				;R21		|
+		push	R_SP				;R22 / R20	|
+		push	R_TEMP				;R23		|
+		push	R_TEMP2				;R24		|
+		push	R_TEMP3				;R25		|
+		push	R_PCL				;R26 (XL)	|
+		push	R_PCH				;R27 (XH)	|
+		push	R_CADDRL			;R28 (YL)
+		push	R_CADDRH			;R29 (YH)
+		push	R_IR				;R30 (ZL)	|
+		push	R_IRH				;R31 (ZH)	|
+
+#ifdef CONFIG_UART_DEBUG
+		lds	R_TEMP,UCSRB			;USART control register B
+		push	R_TEMP
+		andi	R_TEMP,~((1<<RXCIE0)|(1<<TXCIE0)|(1<<UDRIE0))
+		sts	UCSRB,R_TEMP			;Disable USART interrupts
+#endif
+		rcall	cpustateload			;Load 6502 state
+		rcall	movesreg_to_zn
+
+		ldi	R_TEMP,VCPU_ERROR_ALIGN		;"Align Error" flag
+;#if CONFIG_VCPUOPTIMLEVEL == 1
+;		ldi	R_TEMP2,pm_lo8(instrtable)
+;		tst	R_TEMP2
+;		brne	vcpu6502core_exit
+;#elif CONFIG_VCPUOPTIMLEVEL == 2
+;		tst	R_RAML
+;		brne	vcpu6502core_exit
+;#elif CONFIG_VCPUOPTIMLEVEL == 3
+		ldi	R_TEMP2,pm_lo8(instrtable)
+		or	R_TEMP2,R_RAML
+		brne	vcpu6502core_exit
+;#endif
+		rcall	1f
+		subi	R_TEMP3,-2			;AVR with 16 bit PC: xCALL push 2 BYTEs to STACK
+		in	R_TEMP2,_SFR_IO_ADDR(SPL)
+		cp	R_TEMP3,R_TEMP2
+		brne	vcpu6502core_exit
+		rjmp	calc_pc				;Calculate PC, fetch next instruction
+1:		in	R_TEMP3,_SFR_IO_ADDR(SPL)
+		ret
+
+
+
+common_readmemtoa:
+
+		rcall	read_memory			;12/13 (RAM)
+		mov	R_A,R_TEMP			;1
+
+decode_setnz_a:	mov	R_S_Z,R_A			;1
+decode_setn:	mov	R_S_N,R_S_Z			;1
+decode_fetch:	opcodefetchcall				;4/7
+
+decode_setnz_x:	mov	R_S_Z,R_X			;1
+		mov	R_S_N,R_S_Z			;1
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall				;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch			;2
+#endif
+
+decode_setnz_y:	mov	R_S_Z,R_Y			;1
+		mov	R_S_N,R_S_Z			;1
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall				;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch			;2
+#endif
+
+
+
+ninstr_hangup:	ldi	R_TEMP,VCPU_ERROR_HANGUP	;Set "hangup" flag
+		rjmp	vcpu6502core_exit
+
+vcpu6502core_exit_sfs:
+		ldi	R_TEMP,0x00			;No NEW flag
+
+vcpu6502core_exit:
+		rcall	movezn_to_sreg			;Copy Z/N bits to SREG BYTE
+		rcall	cpustatesave			;Save 6502 state, convert PC to 6502 PC
+
+		cpi	R_PCH,CONFIG_BUFFER_COUNT	;PC is higher than valid memory address?
+		brcs	1f				;If no, OK
+		ori	R_TEMP,VCPU_ERROR_ILLEGALFC	;If yes, set FLAG
+1:		cli
+		lds	R_TEMP2,vcpureg_interrupt
+		or	R_TEMP2,R_TEMP
+		lds	R_TEMP,interruptcode		;Requested / early saved interrupt flag
+		or	R_TEMP2,R_TEMP
+		sts	vcpureg_interrupt,R_TEMP2
+		sei
+
+#ifdef CONFIG_UART_DEBUG
+		pop	R_TEMP
+		sts	UCSRB,R_TEMP			;Restore USART interrupts
+#endif
+		pop	R_IRH				;R31 (ZH)	|
+		pop	R_IR				;R30 (ZL)	|
+		pop	R_CADDRH			;R29 (YH)
+		pop	R_CADDRL			;R28 (YL)
+		pop	R_PCH				;R27 (XH)	|
+		pop	R_PCL				;R26 (XL)	|
+		pop	R_TEMP3				;R25		|
+		pop	R_TEMP2				;R24		|
+		pop	R_TEMP				;R23		|
+
+		pop	R_SP				;R22 / R20	|
+		pop	R_SPH				;R21		|
+#ifndef CPUMEMORYALIGNED
+		pop	R_SPL				;R20		|
+#endif
+		pop	R_SR				;R19		|
+		pop	R_Y				;R18		|
+		pop	R_X				;R17
+		pop	R_A				;R16
+		pop	R_S_N				;R15
+		pop	R_S_Z				;R14
+		pop	R_ZPH				;R13
+#ifndef CPUMEMORYALIGNED
+		pop	R_ZPL				;R12
+#endif
+		pop	R_SAVEADDRH			;R11
+		pop	R_SAVEADDRL			;R10
+		pop	R_RAMH				;R9
+		pop	R_RAML				;R8
+		pop	R_USERRETH			;R7
+		pop	R_USERRETL			;R6
+		pop	R_USER2H			;R5
+		pop	R_USER2L			;R4
+		pop	R_USER1H			;R3
+		pop	R_USER1L			;R2
+		ret
+;=============================================
 ;	Save 6502 state to SRAM:
-cpustatesave:	sub	R_PCL,R_RAML
+cpustatesave:
+#ifndef CPUMEMORYALIGNED
+		sub	R_PCL,R_RAML
 		sbc	R_PCH,R_RAMH
+#else
+		sub	R_PCH,R_RAMH
+#endif
+		sub	R_SPH,R_RAMH
+		sub	R_ZPH,R_RAMH
 #ifndef INSTRTABLEALIGNED
-		sub	R_IR,R_INSTRTL
+		subi	R_IR,pm_lo8(instrtable)
 #endif
 		sts	vcpureg_lastopcode,R_IR
 		ldi	R_CADDRL,lo8(vcpuregs)
@@ -50,19 +239,34 @@ cpustatesave:	sub	R_PCL,R_RAML
 		st	R_CADDR+,R_Y
 		st	R_CADDR+,R_SR
 		st	R_CADDR+,R_SP
+		st	R_CADDR+,R_SPH
+		st	R_CADDR+,R_ZPH
+
+#if VCPU_VERSION >= 2
+		adiw	R_CADDR,3		;Skip Interrupt, ReqFunct, LastOp
+  #ifndef CPUMEMORYALIGNED
+		sub	R_USERRETL,R_RAML
+		sbc	R_USERRETH,R_RAMH
+		sub	R_USER1L,R_RAML
+		sbc	R_USER1H,R_RAMH
+		sub	R_USER2L,R_RAML
+		sbc	R_USER2H,R_RAMH
+  #else
+		sub	R_USERRETH,R_RAMH
+		sub	R_USER1H,R_RAMH
+		sub	R_USER2H,R_RAMH
+  #endif
+		st	R_CADDR+,R_USERRETL
+		st	R_CADDR+,R_USERRETH
+		st	R_CADDR+,R_USER1L
+		st	R_CADDR+,R_USER1H
+		st	R_CADDR+,R_USER2L
+		st	R_CADDR+,R_USER2H
+#endif
 		ret
 
 ;	Load 6502 state from SRAM:
 cpustateload:	clr	R_ZERO
-		ldi	R_IR,pm_lo8(instrtable)
-		ldi	R_IRH,pm_hi8(instrtable)
-		movw	R_INSTRT,R_IR
-		ldi	R_CADDRL,pm_lo8(readiotable)
-		ldi	R_CADDRH,pm_hi8(readiotable)
-		movw	R_RDIO,R_CADDR
-		ldi	R_CADDRL,pm_lo8(writeiotable)
-		ldi	R_CADDRH,pm_hi8(writeiotable)
-		movw	R_WRIO,R_CADDR
 
 		ldi	R_CADDRL,lo8(bufferdata)
 		ldi	R_CADDRH,hi8(bufferdata)
@@ -78,37 +282,116 @@ cpustateload:	clr	R_ZERO
 		ld	R_Y,R_CADDR+
 		ld	R_SR,R_CADDR+
 		ld	R_SP,R_CADDR+
-#ifndef CPUMEMORYALIGNED
-		clr	R_SPL
-#endif
-		ld	R_SPH,R_CADDR+
-		clr	R_ZPL
-		ld	R_ZPH,R_CADDR+
 
-		mov	R_TEMP,R_SPH
-		cpi	R_TEMP,CONFIG_BUFFER_COUNT	;SPH > SRAM?
-		brcs	1f
-		clr	R_SPH
-1:		mov	R_TEMP,R_ZPH
-		cpi	R_TEMP,CONFIG_BUFFER_COUNT	;ZPH > SRAM?
-		brcs	2f
-		clr	R_ZPH
-2:
+		clr	R_IR
+		rcall	cpustateld_rdhca		;Read SPH
 #ifndef CPUMEMORYALIGNED
-		add	R_SPL,R_RAML
-		adc	R_SPH,R_RAMH
+		movw	R_SPL,R_IR
 #else
-		add	R_SPH,R_RAMH
+		mov	R_SPH,R_IRH
 #endif
+
+		clr	R_IR
+		rcall	cpustateld_rdhca		;Read ZPH
 #ifndef CPUMEMORYALIGNED
-		add	R_ZPL,R_RAML
-		adc	R_ZPH,R_RAMH
+		movw	R_ZPL,R_IR
 #else
-		add	R_ZPH,R_RAMH
+		mov	R_ZPH,R_IRH
 #endif
+
+#if VCPU_VERSION >= 2
+		adiw	R_CADDR,3		;Skip Interrupt, ReqFunct, LastOp
+		rcall	cpustateld_rdwca	;Get new word, and check address
+		movw	R_USERRET,R_IRADDR
+		rcall	cpustateld_rdwca	;Get new word, and check address
+		movw	R_USER1,R_IRADDR
+		rcall	cpustateld_rdwca	;Get new word, and check address
+		movw	R_USER2,R_IRADDR
+#endif
+		setinstr
 		ret
 
+cpustateld_rdwca:
+		ld	R_IR,R_CADDR+			;Read lo BYTE from CPU state
+cpustateld_rdhca:
+		ld	R_IRH,R_CADDR+			;Read (hi) BYTE from CPU state
+		cpi	R_IRH,CONFIG_BUFFER_COUNT	;addr Hi > SRAM?
+		brcs	1f
+		clr	R_IRH
+		clr	R_IR
+1:
+#ifndef CPUMEMORYALIGNED
+		add	R_IR,R_RAML
+		adc	R_IRH,R_RAMH
+#else
+		add	R_IRH,R_RAMH
+#endif
+		ret
 ;=============================================
+;=== If VCPU version lower than 2, these opcodes not defined:
+#if VCPU_VERSION < 2
+  #define einstr_userr ninstr_hangup
+  #define einstr_user1 ninstr_hangup
+  #define einstr_user2 ninstr_hangup
+  #define einstr_confg ninstr_hangup
+#endif
+
+;=== If no any fast serial support, these opcodes not defined:
+#if CONFIG_FASTSERIAL_MODE < 1
+  #define uinstr_op_0x8f ninstr_hangup
+  #define uinstr_op_0x9f ninstr_hangup
+  #define uinstr_op_0xaf ninstr_hangup
+#endif
+
+;=== If no parallel port, these opcodes not defined:
+#if (!defined(HAVE_PARALLEL) || (VCPU_VERSION < 2))
+  #define uinstr_op_0x07 ninstr_hangup
+  #define uinstr_op_0x17 ninstr_hangup
+  #define uinstr_op_0x27 ninstr_hangup
+  #define uinstr_op_0x37 ninstr_hangup
+  #define uinstr_op_0x47 ninstr_hangup
+#endif
+
+
+
+;=== If bus type not CBMSER, these opcodes not defined:
+#if VCPU_BUSTYPE != VCPU_INTERFACE_CBMSER
+  #define uinstr_op_0x03 ninstr_hangup
+  #define uinstr_op_0x13 ninstr_hangup
+  #define uinstr_op_0x23 ninstr_hangup
+  #define uinstr_op_0x33 ninstr_hangup
+  #define uinstr_op_0x43 ninstr_hangup
+  #define uinstr_op_0x53 ninstr_hangup
+  #define uinstr_op_0x63 ninstr_hangup
+  #define uinstr_op_0x73 ninstr_hangup
+  #define uinstr_op_0x83 ninstr_hangup
+  #define uinstr_op_0x93 ninstr_hangup
+  #define uinstr_op_0xa3 ninstr_hangup
+  #define uinstr_op_0xb3 ninstr_hangup
+  #define uinstr_op_0xc3 ninstr_hangup
+  #define uinstr_op_0xd3 ninstr_hangup
+  #define uinstr_op_0xe3 ninstr_hangup
+  #define uinstr_op_0xf3 ninstr_hangup
+  #define uinstr_op_0x0b ninstr_hangup
+  #define uinstr_op_0x1b ninstr_hangup
+  #define uinstr_op_0x2b ninstr_hangup
+  #define uinstr_op_0x3b ninstr_hangup
+  #define uinstr_op_0x4b ninstr_hangup
+  #define uinstr_op_0x5b ninstr_hangup
+  #define uinstr_op_0x6b ninstr_hangup
+  #define uinstr_op_0x7b ninstr_hangup
+  #define uinstr_op_0x8b ninstr_hangup
+  #define uinstr_op_0x9b ninstr_hangup
+  #define uinstr_op_0xdb ninstr_hangup
+#endif
+
+;=== If UART Debug not enabled:
+#ifndef CONFIG_UART_DEBUG
+  #define writeio_dbg_uarttx writeio_na
+#endif
+
+
+
 #ifdef INSTRTABLEALIGNED
   .section .vcpu6502core
 #endif
@@ -121,7 +404,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	ninstr_hangup		;$04: IOp
 		rjmp	instr_ora_am2		;$05: ORA $zp
 		rjmp	instr_asl_am2		;$06: ASL $zp
-		rjmp	ninstr_hangup		;$07: IOp
+		rjmp	uinstr_op_0x07		;$07: (IOp) PPACK
 		rjmp	instr_php		;$08: PHP
 		rjmp	instr_ora_am3		;$09: ORA #$gh
 		rjmp	instr_asl		;$0A: ASL
@@ -129,7 +412,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	ninstr_hangup		;$0C: IOp
 		rjmp	instr_ora_am4		;$0D: ORA $ghjk
 		rjmp	instr_asl_am4		;$0E: ASL $ghjk
-		rjmp	ninstr_hangup		;$0F: IOp
+		rjmp	einstr_userr		;$0F: (IOp) (W/R65C02: BBR0 $zp,offs) USERR (R2)
 
 		rjmp	instr_bpl		;$10: BPL $rtyu
 		rjmp	instr_ora_am5		;$11: ORA ($zp),Y
@@ -138,7 +421,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	ninstr_hangup		;$14: IOp
 		rjmp	instr_ora_am6		;$15: ORA $zp,X
 		rjmp	instr_asl_am6		;$16: ASL $zp,X
-		rjmp	ninstr_hangup		;$17: IOp
+		rjmp	uinstr_op_0x17		;$17: (IOp) PPDRD
 		rjmp	instr_clc		;$18: CLC
 		rjmp	instr_ora_am7		;$19: ORA $ghjk,Y
 		rjmp	ninstr_hangup		;$1A: IOp
@@ -146,7 +429,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	ninstr_hangup		;$1C: IOp
 		rjmp	instr_ora_am8		;$1D: ORA $ghjk,X
 		rjmp	instr_asl_am8		;$1E: ASL $ghjk,X
-		rjmp	ninstr_hangup		;$1F: IOp
+		rjmp	einstr_user1		;$1F: (IOp) (W/R65C02: BBR1 $zp,offs) USER1 (R2)
 
 		rjmp	instr_jsr_am4		;$20: JSR $ghjk
 		rjmp	instr_and_am1		;$21: AND ($zp,X)
@@ -155,7 +438,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_bit_am2		;$24: BIT $zp
 		rjmp	instr_and_am2		;$25: AND $zp
 		rjmp	instr_rol_am2		;$26: ROL $zp
-		rjmp	ninstr_hangup		;$27: IOp
+		rjmp	uinstr_op_0x27		;$27: (IOp) PPDWR
 		rjmp	instr_plp		;$28: PLP
 		rjmp	instr_and_am3		;$29: AND #$gh
 		rjmp	instr_rol		;$2A: ROL
@@ -163,7 +446,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_bit_am4		;$2C: BIT $ghjk
 		rjmp	instr_and_am4		;$2D: AND $ghjk
 		rjmp	instr_rol_am4		;$2E: ROL $ghjk
-		rjmp	ninstr_hangup		;$2F: IOp
+		rjmp	einstr_user2		;$2F: (IOp) (W/R65C02: BBR2 $zp,offs) USER2 (R2)
 
 		rjmp	instr_bmi		;$30: BMI $rtyu
 		rjmp	instr_and_am5		;$31: AND ($zp),Y
@@ -172,7 +455,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	ninstr_hangup		;$34: IOp
 		rjmp	instr_and_am6		;$35: AND $zp,X
 		rjmp	instr_rol_am6		;$36: ROL $zp,X
-		rjmp	ninstr_hangup		;$37: IOp
+		rjmp	uinstr_op_0x37		;$37: (IOp) PPWAI
 		rjmp	instr_sec		;$38: SEC
 		rjmp	instr_and_am7		;$39: AND $ghjk,Y
 		rjmp	ninstr_hangup		;$3A: IOp
@@ -189,7 +472,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	einstr_tyzph		;$44: (IOp) TYZPH
 		rjmp	instr_eor_am2		;$45: EOR $zp
 		rjmp	instr_lsr_am2		;$46: LSR $zp
-		rjmp	ninstr_hangup		;$47: IOp
+		rjmp	uinstr_op_0x47		;$47: (IOp) PPWDW
 		rjmp	instr_pha		;$48: PHA
 		rjmp	instr_eor_am3		;$49: EOR #$gh
 		rjmp	instr_lsr		;$4A: LSR
@@ -219,7 +502,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_rts		;$60: RTS
 		rjmp	instr_adc_am1		;$61: ADC ($zp,X)
 		rjmp	ninstr_hangup		;$62: IOp
-		rjmp	uinstr_op_0x63		;$63: IOp USND1
+		rjmp	uinstr_op_0x63		;$63: (IOp) USND1
 		rjmp	ninstr_hangup		;$64: IOp
 		rjmp	instr_adc_am2		;$65: ADC $zp
 		rjmp	instr_ror_am2		;$66: ROR $zp
@@ -236,7 +519,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_bvs		;$70: BVS $rtyu
 		rjmp	instr_adc_am5		;$71: ADC ($zp),Y
 		rjmp	ninstr_hangup		;$72: IOp
-		rjmp	uinstr_op_0x73		;$73: IOp URCV1
+		rjmp	uinstr_op_0x73		;$73: (IOp) URCV1
 		rjmp	ninstr_hangup		;$74: IOp
 		rjmp	instr_adc_am6		;$75: ADC $zp,X
 		rjmp	instr_ror_am6		;$76: ROR $zp,X
@@ -265,7 +548,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_sty_am4		;$8C: STY $ghjk
 		rjmp	instr_sta_am4		;$8D: STA $ghjk
 		rjmp	instr_stx_am4		;$8E: STX $ghjk
-		rjmp	ninstr_hangup		;$8F: IOp
+		rjmp	uinstr_op_0x8f		;$8F: (IOp) (W/R65C02: BBS0 $zp,offs) FSTXB
 
 		rjmp	instr_bcc		;$90: BCC $rtyu
 		rjmp	instr_sta_am5		;$91: STA ($zp),Y
@@ -282,7 +565,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	ninstr_hangup		;$9C: IOp
 		rjmp	instr_sta_am8		;$9D: STA $ghjk,X
 		rjmp	ninstr_hangup		;$9E: IOp
-		rjmp	ninstr_hangup		;$9F: IOp
+		rjmp	uinstr_op_0x9f		;$9F: (IOp) (W/R65C02: BBS1 $zp,offs) FSRXB
 
 		rjmp	instr_ldy_am3		;$A0: LDY #$gh
 		rjmp	instr_lda_am1		;$A1: LDA ($zp,X)
@@ -299,7 +582,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_ldy_am4		;$AC: LDY $ghjk
 		rjmp	instr_lda_am4		;$AD: LDA $ghjk
 		rjmp	instr_ldx_am4		;$AE: LDX $ghjk
-		rjmp	ninstr_hangup		;$AF: IOp
+		rjmp	uinstr_op_0xaf		;$AF: (IOp) (W/R65C02: BBS2 $zp,offs) FSRXC
 
 		rjmp	instr_bcs		;$B0: BCS $rtyu
 		rjmp	instr_lda_am5		;$B1: LDA ($zp),Y
@@ -329,7 +612,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_iny		;$C8: INY
 		rjmp	instr_cmp_am3		;$C9: CMP #$gh
 		rjmp	instr_dex		;$CA: DEX
-		rjmp	ninstr_hangup		;$CB: IOp
+		rjmp	einstr_confg		;$CB: (IOp) (65C02: WAI) CONFG (VCPU configuration, 2+ BYTEs OpCode) (R2)
 		rjmp	instr_cpy_am4		;$CC: CPY $ghjk
 		rjmp	instr_cmp_am4		;$CD: CMP $ghjk
 		rjmp	instr_dec_am4		;$CE: DEC $ghjk
@@ -363,7 +646,7 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_inx		;$E8: INX
 		rjmp	instr_sbc_am3		;$E9: SBC #$gh
 		rjmp	instr_nop		;$EA: NOP
-		rjmp	uinstr_op_0xeb		;$EB: (IOp) UTEST
+		rjmp	ninstr_hangup		;$EB: (IOp) (deprecated UTEST)
 		rjmp	instr_cpx_am4		;$EC: CPX $ghjk
 		rjmp	instr_sbc_am4		;$ED: SBC $ghjk
 		rjmp	instr_inc_am4		;$EE: INC $ghjk
@@ -385,40 +668,21 @@ instrtable:	rjmp	instr_brk		;$00: BRK
 		rjmp	instr_sbc_am8		;$FD: SBC $ghjk,X
 		rjmp	instr_inc_am8		;$FE: INC $ghjk,X
 		rjmp	ninstr_hangup		;$FF: IOp
+
+
+
 ;=============================================
 ;	I/O decoder tables, followed the instructions decoder table:
-;	I/O Read routines:
-readiotable:	rjmp	readio_version		;$00: VCPU version + bus type
-		rjmp	readio_memiosize	;$01: MEM + I/O area size
-		rjmp	readio_hidbits		;$02: HID + LEDs
-		rjmp	readio_deviceaddress	;$03: Device address (8, 9, 10, 11)
-		rjmp	readio_hostspd		;$04: Host CPU speed
-		rjmp	readio_checkfw		;$05:
-		rjmp	readio_na		;$06:
-		rjmp	readio_decimallow	;$07: Binary to decimal converter: result Low digit
-		rjmp	readio_decimalmid	;$08: Binary to decimal converter: result Mid digit
-		rjmp	readio_decimalhigh	;$09: Binary to decimal converter: result High digit
-#if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
-		rjmp	readio_cbmseraso	;$0A: ATN/SRQ Lines Output register read (B7=ATN, B6=SRQ)
-		rjmp	readio_cbmserasi	;$0B: ATN/SRQ Lines read back (B7=ATN, B6=SRQ)
-		rjmp	readio_cbmserdco	;$0C: DAT/CLK Lines output register read (B1=DAT, B0=CLK)
-		rjmp	readio_cbmserin		;$0D: DAT/CLK Lines read back (B7=DAT, B6=CLK)
-		rjmp	readio_cbmserci		;$0E: CLK Line read back (B7=CLK)
-		rjmp	readio_cbmserdi		;$0F: DAT Line read back (B7=DAT)
-#else
-		rjmp	readio_na		;$0A:
-		rjmp	readio_na		;$0B:
-		rjmp	readio_na		;$0C:
-		rjmp	readio_na		;$0D:
-		rjmp	readio_na		;$0E:
-		rjmp	readio_na		;$0F:
-#endif
-;	I/O Write routines:
+;	I/O Write routines: (Aligned table: 0xXX00)
 writeiotable:	rjmp	writeio_na		;$00:
-		rjmp	writeio_na		;$01:
+#if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
+		rjmp	writeio_linediag	;$01: Linediag
+#else
+		rjmp	writeio_na		;$02:
+#endif
 		rjmp	writeio_hidbits		;$02: LEDs
 		rjmp	writeio_na		;$03:
-		rjmp	writeio_na		;$04:
+		rjmp	writeio_dbg_uarttx	;$04: (UART debug: Transmit BYTE)
 		rjmp	writeio_na		;$05:
 		rjmp	writeio_na		;$06:
 		rjmp	writeio_convbin2dec	;$07: Binary to decimal converter: convert to decimal
@@ -431,6 +695,10 @@ writeiotable:	rjmp	writeio_na		;$00:
 		rjmp	writeio_na		;$0D:
 		rjmp	writeio_cbmserco	;$0E: CLK Line write (CLK=B0)
 		rjmp	writeio_cbmserdo	;$0F: DAT Line write (DAT=B0)
+  #if (defined(HAVE_PARALLEL) && (VCPU_VERSION >= 2))
+		rjmp	writeio_parlines	;$10: Parallel port lines
+		rjmp	writeio_paraux		;$11: Parallel port auxilary
+  #endif
 #else
 		rjmp	writeio_na		;$0A:
 		rjmp	writeio_na		;$0B:
@@ -440,6 +708,36 @@ writeiotable:	rjmp	writeio_na		;$00:
 		rjmp	writeio_na		;$0F:
 #endif
 
+;	I/O Read routines:
+readiotable:	rjmp	readio_version		;$00: VCPU version + bus type
+		rjmp	readio_memiosize	;$01: MEM + I/O area size
+		rjmp	readio_hidbits		;$02: HID + LEDs
+		rjmp	readio_deviceaddress	;$03: Device address (8, 9, 10, 11)
+		rjmp	readio_hostspd		;$04: Host CPU speed (UART debug: Receive BYTE)
+		rjmp	readio_checkfw		;$05:
+		rjmp	readio_globalflags	;$06: Firmware "globalflags" variable
+		rjmp	readio_decimallow	;$07: Binary to decimal converter: result Low digit
+		rjmp	readio_decimalmid	;$08: Binary to decimal converter: result Mid digit
+		rjmp	readio_decimalhigh	;$09: Binary to decimal converter: result High digit
+#if VCPU_BUSTYPE == VCPU_INTERFACE_CBMSER
+		rjmp	readio_cbmseraso	;$0A: ATN/SRQ Lines Output register read (B7=ATN, B6=SRQ)
+		rjmp	readio_cbmserasi	;$0B: ATN/SRQ Lines read back (B7=ATN, B6=SRQ)
+		rjmp	readio_cbmserdco	;$0C: DAT/CLK Lines output register read (B1=DAT, B0=CLK)
+		rjmp	readio_cbmserin		;$0D: DAT/CLK Lines read back (B7=DAT, B6=CLK)
+		rjmp	readio_cbmserci		;$0E: CLK Line read back (B7=CLK)
+		rjmp	readio_cbmserdi		;$0F: DAT Line read back (B7=DAT)
+  #if (defined(HAVE_PARALLEL) && (VCPU_VERSION >= 2))
+		rjmp	readio_parlines		;$10: Parallel port lines
+		rjmp	readio_paraux		;$11: Parallel port auxilary
+  #endif
+#else
+		rjmp	readio_na		;$0A:
+		rjmp	readio_na		;$0B:
+		rjmp	readio_na		;$0C:
+		rjmp	readio_na		;$0D:
+		rjmp	readio_na		;$0E:
+		rjmp	readio_na		;$0F:
+#endif
 ;=============================================
 ;===	Commands:
 
@@ -537,7 +835,8 @@ instr_ldy_am8:	;rcall	getaddr_am8			;13
 ;=== STA/X/Y:
 ;	STA ($zp,X)
 instr_sta_am1:	rcall	getaddr_am1			;17/18
-		rjmp	write_memory_a			;10+n (RAM)
+		mov	R_TEMP,R_A			;1
+		rjmp	write_memory			;9+n (RAM)
 ;	STA $zp
 instr_sta_am2:	;rcall	getaddr_am2			;10/12
 		calcraddr_am2				;3/5
@@ -546,10 +845,12 @@ instr_sta_am2:	;rcall	getaddr_am2			;10/12
 ;	STA $ghjk
 instr_sta_am4:	;rcall	getaddr_am4			;11
 		calcvaddr_am4				;4
-		rjmp	write_memory_a			;10+n (RAM)
+		mov	R_TEMP,R_A			;1
+		rjmp	write_memory			;9+n (RAM)
 ;	STA ($zp),Y
 instr_sta_am5:	rcall	getaddr_am5			;18/19
-		rjmp	write_memory_a			;10+n (RAM)
+		mov	R_TEMP,R_A			;1
+		rjmp	write_memory			;9+n (RAM)
 ;	STA $zp,X
 instr_sta_am6:	;rcall	getaddr_am6			;11/13
 		calcraddr_am6				;4/6
@@ -558,11 +859,13 @@ instr_sta_am6:	;rcall	getaddr_am6			;11/13
 ;	STA $ghjk,Y
 instr_sta_am7:	;rcall	getaddr_am7			;13
 		calcvaddr_am7				;6
-		rjmp	write_memory_a			;10+n (RAM)
+		mov	R_TEMP,R_A			;1
+		rjmp	write_memory			;9+n (RAM)
 ;	STA $ghjk,X
 instr_sta_am8:	;rcall	getaddr_am8			;13
 		calcvaddr_am8				;6
-		rjmp	write_memory_a			;10+n (RAM)
+		mov	R_TEMP,R_A			;1
+		rjmp	write_memory			;9+n (RAM)
 
 ;	STX $zp
 instr_stx_am2:	;rcall	getaddr_am2			;10/12
@@ -865,10 +1168,7 @@ instr_asl_comm:	movw	R_SAVEADDR,R_CADDR		;1
 		bst	R_TEMP,7			;1
 		bld	R_SR,0				;1
 		lsl	R_TEMP				;1
-		mov	R_S_Z,R_TEMP			;1
-		mov	R_S_N,R_S_Z			;1
-		movw	R_CADDR,R_SAVEADDR		;1
-		rjmp	write_memory			;9+n (RAM)
+		rjmp	writeback_memory		;10+n (RAM)
 ;	ASL $zp,X
 instr_asl_am6:	rcall	getaddr_am6			;11/13
 		rjmp	instr_asl_cmzp			;13+n
@@ -900,10 +1200,7 @@ instr_lsr_comm:	movw	R_SAVEADDR,R_CADDR		;1
 		bst	R_TEMP,0			;1
 		bld	R_SR,0				;1
 		lsr	R_TEMP				;1
-		mov	R_S_Z,R_TEMP			;1
-		mov	R_S_N,R_S_Z			;1
-		movw	R_CADDR,R_SAVEADDR		;1
-		rjmp	write_memory			;9+n (RAM)
+		rjmp	writeback_memory		;10+n (RAM)
 ;	LSR $zp,X
 instr_lsr_am6:	rcall	getaddr_am6			;11/13
 		rjmp	instr_lsr_cmzp			;13+n
@@ -935,10 +1232,7 @@ instr_rol_comm:	movw	R_SAVEADDR,R_CADDR		;1
 		lsr	R_SR				;1	6502 "C" -> AVR C
 		rol	R_TEMP				;1
 		rol	R_SR				;1	AVR C -> 6502 "C"
-		mov	R_S_Z,R_TEMP			;1
-		mov	R_S_N,R_S_Z			;1
-		movw	R_CADDR,R_SAVEADDR		;1
-		rjmp	write_memory			;9+n (RAM)
+		rjmp	writeback_memory		;10+n (RAM)
 ;	ROL $zp,X
 instr_rol_am6:	rcall	getaddr_am6			;11/13
 		rjmp	instr_rol_cmzp			;13+n
@@ -970,10 +1264,7 @@ instr_ror_comm:	movw	R_SAVEADDR,R_CADDR		;1
 		lsr	R_SR				;1	6502 "C" -> AVR C
 		ror	R_TEMP				;1
 		rol	R_SR				;1	AVR C -> 6502 "C"
-		mov	R_S_Z,R_TEMP			;1
-		mov	R_S_N,R_S_Z			;1
-		movw	R_CADDR,R_SAVEADDR		;1
-		rjmp	write_memory			;9+n (RAM)
+		rjmp	writeback_memory		;10+n (RAM)
 ;	ROR $zp,X
 instr_ror_am6:	rcall	getaddr_am6			;11/13
 		rjmp	instr_ror_cmzp			;13+n
@@ -996,10 +1287,7 @@ instr_inc_am4:	;rcall	getaddr_am4			;11
 instr_inc_comm:	movw	R_SAVEADDR,R_CADDR		;1
 		rcall	read_memory			;12/13 (RAM)
 		inc	R_TEMP				;1
-		mov	R_S_Z,R_TEMP			;1
-		mov	R_S_N,R_S_Z			;1
-		movw	R_CADDR,R_SAVEADDR		;1
-		rjmp	write_memory			;9+n (RAM)
+		rjmp	writeback_memory		;10+n (RAM)
 ;	INC $zp,X
 instr_inc_am6:	rcall	getaddr_am6			;11/13
 		rjmp	instr_inc_cmzp			;11+n
@@ -1022,10 +1310,7 @@ instr_dec_am4:	;rcall	getaddr_am4			;11
 instr_dec_comm:	movw	R_SAVEADDR,R_CADDR		;1
 		rcall	read_memory			;12/13 (RAM)
 		dec	R_TEMP				;1
-		mov	R_S_Z,R_TEMP			;1
-		mov	R_S_N,R_S_Z			;1
-		movw	R_CADDR,R_SAVEADDR		;1
-		rjmp	write_memory			;9+n (RAM)
+		rjmp	writeback_memory		;10+n (RAM)
 ;	DEC $zp,X
 instr_dec_am6:	rcall	getaddr_am6			;11/13
 		rjmp	instr_dec_cmzp			;11+n
@@ -1295,7 +1580,8 @@ instr_plp:	inc	R_SP				;1
 ;===	Extended instructions:
 
 ;	TZPHY:
-einstr_tzphy:	lds	R_Y,vcpureg_zph			;2
+einstr_tzphy:	mov	R_Y,R_ZPH			;1
+1:		sub	R_Y,R_RAMH			;1
 		rjmp	decode_setnz_y			;4+n
 ;	TYZPH:
 einstr_tyzph:	mov	R_TEMP,R_Y			;1
@@ -1304,13 +1590,16 @@ einstr_tyzph:	mov	R_TEMP,R_Y			;1
 einstr_ldzph:	ld	R_TEMP,R_PC+			;2	Get data
 einstr_zph:	cpi	R_TEMP,CONFIG_BUFFER_COUNT	;1
 		brcc	einstr_error			;1/2
-		sts	vcpureg_zph,R_TEMP		;2
+#ifndef CPUMEMORYALIGNED
 		movw	R_ZPL,R_RAM			;1
+#else
+		mov	R_ZPH,R_RAMH			;1
+#endif
 		add	R_ZPH,R_TEMP			;1
 		rjmp	decode_fetch			;2+n
 ;	TSPHY:
-einstr_tsphy:	lds	R_Y,vcpureg_sph			;2
-		rjmp	decode_setnz_y			;4+n
+einstr_tsphy:	mov	R_Y,R_SPH			;1
+		rjmp	1b				;2
 ;	TYSPH:
 einstr_tysph:	mov	R_TEMP,R_Y			;1
 		rjmp	einstr_sph			;2
@@ -1318,7 +1607,6 @@ einstr_tysph:	mov	R_TEMP,R_Y			;1
 einstr_ldsph:	ld	R_TEMP,R_PC+			;2	Get data
 einstr_sph:	cpi	R_TEMP,CONFIG_BUFFER_COUNT	;1
 		brcc	einstr_error			;1/2
-		sts	vcpureg_sph,R_TEMP		;2
 #ifndef CPUMEMORYALIGNED
 		movw	R_SPL,R_RAM			;1
 #else
@@ -1330,6 +1618,134 @@ einstr_sph:	cpi	R_TEMP,CONFIG_BUFFER_COUNT	;1
 ;	Address error:
 einstr_error:	rjmp	instr_branch_e
 
+
+
+;=============================================
+;===	VCPU R2 instructions:
+#if VCPU_VERSION >= 2
+
+;	USERR: Return:
+einstr_userr:	movw	R_PC,R_USERRET			;1	Restore PC
+  #ifdef INSTRTABLEALIGNED
+		ld	R_IR,R_PC+			;2
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		ijmp					;2	8+4 Clk: "1T"
+		sbiw	R_PC,1				;	PC -1
+		rjmp	vcpu6502core_exit_sfs		;	Exit emulation
+  #else
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	decode_fetch			;2+n	9? Clk
+		rjmp	vcpu6502core_exit_sfs		;	Exit emulation
+  #endif
+
+;	USER1: Call 1:
+einstr_user1:	movw	R_USERRET,R_PC			;1
+		movw	R_PC,R_USER1			;1
+		sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	vcpu6502core_exit_sfs		;	Exit emulation
+		rjmp	decode_fetch			;2+n	12 Clk: "1.5T"
+
+;	USER2: Call 2:
+einstr_user2:	movw	R_USERRET,R_PC			;1
+		movw	R_PC,R_USER2			;1
+		sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	vcpu6502core_exit_sfs		;	Exit emulation
+		rjmp	decode_fetch			;2+n	12 Clk: "1.5T"
+
+;	CONFG: VCPU configuration:
+einstr_confg:	ld	R_TEMP,R_PC+			;2	Get parameter
+		mov	R_TEMP2,R_TEMP			;1
+		andi	R_TEMP2,0b11111000		;1	$00..$07: handle USER vectors
+		brne	1f				;1/2
+
+		ldi	R_CADDRH,(userreg_addr >> 8)	;1
+		clt					;1
+		mov	R_CADDRL,R_TEMP			;1
+		andi	R_CADDRL,0b00000110		;1	only vector no remain ($00/$02/$04/$06)
+		brne	6f				;1/2	Valid vector nos in 1/2/3 ($02/$04/$06)
+		ldi	R_CADDRL,0b00000110		;1	Src/Dest: RR
+		set					;1	from/to stack
+6:
+  #if userreg_addr != 0x0002
+		subi	R_CADDRL,(256-(userreg_addr&0xff)) ;1
+  #endif
+		sbrc	R_TEMP,0			;1/2	SKIP if vector write
+		rjmp	2f				;2
+;	Write vector:
+		brtc	4f				;1/2	Jump, if source is Y:X
+		movw	R_SAVEADDR,R_CADDR		;1
+		subi	R_SP,-2				;1	SP + 2
+  #ifndef CPUMEMORYALIGNED
+		rcall	calculate_stack_addr		;8/10
+		ld	R_TEMP3,R_CADDR			;2
+		ld	R_TEMP2,-R_CADDR		;2	Read 6502 address from stack
+  #else
+		calcmaddr_stack				;1
+		ld	R_TEMP3,R_CADDR			;2
+		dec	R_CADDRL			;1
+		ld	R_TEMP2,R_CADDR			;2	Read 6502 address from stack
+  #endif
+		movw	R_CADDR,R_SAVEADDR		;1
+		rjmp	5f				;2
+
+4:		mov	R_TEMP2,R_X			;1
+		mov	R_TEMP3,R_Y			;1
+
+5:		cpi	R_TEMP3,CONFIG_BUFFER_COUNT	;1	R_TEMP3:R_TEMP2 = address, point to valid RAM address?
+		brcc	einstr_error			;1/2	If no, illegal address error
+  #ifdef CPUMEMORYALIGNED
+		add	R_TEMP3,R_RAMH			;1
+  #else
+		add	R_TEMP2,R_RAML			;1
+		adc	R_TEMP3,R_RAMH			;1
+  #endif
+		st	R_CADDR+,R_TEMP2		;2	New address Lo store to requested register Lo
+		st	R_CADDR,R_TEMP3			;2	New address Hi store to requested register Hi
+		rjmp	decode_fetch			;2+n
+
+1:
+  #if CONFIG_FASTSERIAL_MODE >= 1
+		cpi	R_TEMP2,0b00010000		;1	$1x: Fast Serial config?
+		brne	7f				;1/2
+		sbrs	R_TEMP,0			;1/2/3
+		call	fastser_recvdis			;	Disable receiver (not RCALL, a routine can be anywhere)
+		sbrc	R_TEMP,0			;1/2/3
+		call	fastser_recven			;	Enable receiver (not RCALL, a routine can be anywhere)
+		rjmp	decode_fetch			;2+n
+7:
+  #endif
+		rjmp	ninstr_hangup			;	Illegal OpCode, error
+
+;	Read vector:
+2:		ld	R_TEMP2,R_CADDR+		;2	Read address Lo from requested register Lo
+		ld	R_TEMP3,R_CADDR			;2	Read address Hi from requested register Hi
+  #ifdef CPUMEMORYALIGNED
+		sub	R_TEMP3,R_RAMH			;1
+  #else
+		sub	R_TEMP2,R_RAML			;1
+		sbc	R_TEMP3,R_RAMH			;1
+  #endif
+		brts	3f				;1/2	Jump, if destination is stack
+		mov	R_X,R_TEMP2			;1
+		mov	R_Y,R_TEMP3			;1
+		rjmp	decode_fetch			;2+n
+3:
+  #ifndef CPUMEMORYALIGNED
+		rcall	calculate_stack_addr		;8/10
+  #else
+		calcmaddr_stack				;1
+  #endif
+		st	R_CADDR,R_TEMP3			;2	Addr HI to stack
+  #ifdef CPUMEMORYALIGNED
+		dec	R_CADDRL			;1
+  #else
+		sbiw	R_CADDR,0x01			;2
+  #endif
+		st	R_CADDR,R_TEMP2			;2	Addr LO to stack
+		subi	R_SP,0x02			;1
+		rjmp	decode_fetch			;2+n
+
+#endif	// VCPU_VERSION >= 2
 ;=============================================
 ;===	µOp instructions:
 
@@ -1343,62 +1759,38 @@ einstr_error:	rjmp	instr_branch_e
 ;	UWDTL: Wait for serial DAT Low:
 uinstr_op_0x03:	sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
 		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
-#ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA		;1/2/3
-#else
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA		;1/2/3
-#endif
+		si_skipiflinelow IEC_PIN_DATA				;1/2/3
 		rjmp	uinstr_op_0x03					;2
 		rjmp	decode_fetch					;2+n	12 Clk "1.5T", if no wait
 ;	UWCKL: Wait for serial CLK Low:
 uinstr_op_0x23:	sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
 		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
-#ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK		;1/2/3
-#else
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK		;1/2/3
-#endif
+		si_skipiflinelow IEC_PIN_CLOCK				;1/2/3
 		rjmp	uinstr_op_0x23					;2
 		rjmp	decode_fetch					;2+n	12 Clk "1.5T", if no wait
 ;	UWATL: Wait for serial ATN Low:
 uinstr_op_0x43:	sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
 		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
-#ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN		;1/2/3
-#else
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN		;1/2/3
-#endif
+		si_skipiflinelow IEC_PIN_ATN				;1/2/3
 		rjmp	uinstr_op_0x43					;2
 		rjmp	decode_fetch					;2+n	12 Clk "1.5T", if no wait
 
 ;	UWDTH: Wait for serial DAT high:
 uinstr_op_0x13:	sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
 		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
-#ifdef IEC_INPUTS_INVERTED
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA		;1/2/3
-#else
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA		;1/2/3
-#endif
+		si_skipiflinehigh IEC_PIN_DATA				;1/2/3
 		rjmp	uinstr_op_0x13					;2
 		rjmp	decode_fetch					;2+n	12 Clk "1.5T", if no wait
 ;	UWCKH: Wait for serial CLK high:
 uinstr_op_0x33:	sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
 		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
-#ifdef IEC_INPUTS_INVERTED
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK		;1/2/3
-#else
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK		;1/2/3
-#endif
+		si_skipiflinehigh IEC_PIN_CLOCK				;1/2/3
 		rjmp	uinstr_op_0x33					;2
 		rjmp	decode_fetch					;2+n	12 Clk "1.5T", if no wait
 ;	UWATH: Wait for serial ATN high:
 uinstr_op_0x53:	sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
 		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
-#ifdef IEC_INPUTS_INVERTED
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN		;1/2/3
-#else
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN		;1/2/3
-#endif
+		si_skipiflinehigh IEC_PIN_ATN				;1/2/3
 		rjmp	uinstr_op_0x53					;2
 		rjmp	decode_fetch					;2+n	12 Clk "1.5T", if no wait
 
@@ -1509,14 +1901,10 @@ uinstr_op_0x4b:	ld	R_TEMP2,R_PC+				;2	Read bitmask
 
 ;	UDTTA #$xx: DAT line to "A" register bit:
 uinstr_op_0x5b:	ld	R_TEMP2,R_PC+				;2	Read bitmask
-		in	R_TEMP,_SFR_IO_ADDR(IEC_INPUT)		;1
+		si_readbusdirect R_TEMP				;1
 		or	R_A,R_TEMP2				;1	Set requested bit in A register
 		com	R_TEMP2					;1
-#ifdef IEC_INPUTS_INVERTED
-		sbrc	R_TEMP,IEC_PIN_DATA			;1/2/3
-#else
-		sbrs	R_TEMP,IEC_PIN_DATA			;1/2/3
-#endif
+		si_skipifregbhigh R_TEMP,IEC_PIN_DATA		;1/2/3
 		and	R_A,R_TEMP2				;1	Clear requested bit in A register, if line low
 		nop						;1
 		rjmp	decode_fetch				;2+n	16 Clk "2T"
@@ -1536,14 +1924,10 @@ uinstr_op_0x6b:	ld	R_TEMP2,R_PC+				;2	Read bitmask
 
 ;	UCKTA #$xx: CLK line to "A" register bit:
 uinstr_op_0x7b:	ld	R_TEMP2,R_PC+				;2	Read bitmask
-		in	R_TEMP,_SFR_IO_ADDR(IEC_INPUT)		;1
+		si_readbusdirect R_TEMP				;1
 		or	R_A,R_TEMP2				;1	Set requested bit in A register
 		com	R_TEMP2					;1
-#ifdef IEC_INPUTS_INVERTED
-		sbrc	R_TEMP,IEC_PIN_CLOCK			;1/2/3
-#else
-		sbrs	R_TEMP,IEC_PIN_CLOCK			;1/2/3
-#endif
+		si_skipifregbhigh R_TEMP,IEC_PIN_CLOCK		;1/2/3
 		and	R_A,R_TEMP2				;1	Clear requested bit in A register, if line low
 		nop						;1
 		rjmp	decode_fetch				;2+n	16 Clk "2T"
@@ -1581,23 +1965,15 @@ uinstr_commout:	out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP		;1	20 Clk "2.5T"
 
 ;	UCDTA #$xx, #$xx: CLK/DAT lines to A register bits:
 uinstr_op_0x9b:	ld	R_TEMP2,R_PC+				;2	Read CLK bitmask
-		in	R_TEMP,_SFR_IO_ADDR(IEC_INPUT)		;1
+		si_readbusdirect R_TEMP				;1
 		ld	R_TEMP3,R_PC+				;2	Read DAT bitmask
 		or	R_A,R_TEMP2				;1
 		or	R_A,R_TEMP3				;1	Set bits to A register
 		com	R_TEMP2					;1
 		com	R_TEMP3					;1
-#ifdef IEC_INPUTS_INVERTED
-		sbrc	R_TEMP,IEC_PIN_CLOCK			;1/2/3
-#else
-		sbrs	R_TEMP,IEC_PIN_CLOCK			;1/2/3
-#endif
+		si_skipifregbhigh R_TEMP,IEC_PIN_CLOCK		;1/2/3
 		and	R_A,R_TEMP2				;1	Clear requested bit in A register, if CLK line low
-#ifdef IEC_INPUTS_INVERTED
-		sbrc	R_TEMP,IEC_PIN_DATA			;1/2/3
-#else
-		sbrs	R_TEMP,IEC_PIN_DATA			;1/2/3
-#endif
+		si_skipifregbhigh R_TEMP,IEC_PIN_DATA		;1/2/3
 		and	R_A,R_TEMP3				;1	Clear requested bit in A register, if DAT line low
 		nop						;1	20 Clk "2.5T"
 uinstr_defetch:
@@ -1610,12 +1986,8 @@ uinstr_defetch:
 ;=== Serial Lines "BIT":
 ;	ULBIT:
 uinstr_op_0xdb:	rjmp	1f					;2
-1:		in	R_TEMP,_SFR_IO_ADDR(IEC_INPUT)		;1	;Read ATN/CLK/DAT (/SRQ)
-#ifdef IEC_INPUTS_INVERTED
-		com	R_TEMP					;1
-#else
-		nop						;1
-#endif
+1:		si_readbusdirect R_TEMP				;1	Read ATN/CLK/DAT (/SRQ)
+		si_invertregbits R_TEMP				;1
 		bst	R_TEMP,IEC_PIN_ATN			;1
 		bld	R_SR,6					;1	ATN -> SR B6 (V flag)
 		bst	R_TEMP,IEC_PIN_CLOCK			;1
@@ -1627,50 +1999,6 @@ uinstr_op_0xdb:	rjmp	1f					;2
 #else
 		rjmp	decode_fetch				;2
 #endif
-
-;=== Cycle instructions:
-;	UINDB: Increment index, Decrement counter, Branch if no underrun:
-uinstr_op_0xab:	ld	R_TEMP,R_PC+				;2	Read offset
-		inc	R_X					;1	Increment index
-		subi	R_Y,0x01				;1	Decrement BYTE-counter
-		brcs	uinstr_defetch				;1/2	12 Clk: "1.5T"
-		add	R_PCL,R_TEMP				;1
-		adc	R_PCH,R_ZERO				;1
-		sbrc	R_TEMP,7				;1/2/3
-		dec	R_PCH					;1
-#ifdef INSTRTABLEALIGNED
-		ld	R_IR,R_PC+				;2
-		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
-		ijmp						;2	16+4 Clk: "2T"
-		rjmp	uinstr_jmpexit				;	Exit
-#else
-		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
-		rjmp	decode_fetch				;2+n
-		rjmp	vcpu6502core_exit_sfs			;	Exit emulation
-#endif
-
-;	UDEDB: Decrement index, Decrement counter, Branch if no underrun:
-uinstr_op_0xbb:	ld	R_TEMP,R_PC+				;2	Read offset
-		dec	R_X					;1	Decrement index
-		subi	R_Y,0x01				;1	Decrement BYTE-counter
-		brcs	uinstr_defetch				;1/2	12 Clk: "1.5T"
-		add	R_PCL,R_TEMP				;1
-		adc	R_PCH,R_ZERO				;1
-		sbrc	R_TEMP,7				;1/2/3
-		dec	R_PCH					;1
-#ifdef INSTRTABLEALIGNED
-		ld	R_IR,R_PC+				;2
-		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
-		ijmp						;2	16+4 Clk: "2T"
-uinstr_jmpexit:	sbiw	R_PC,0x03
-		ld	R_IR,R_PC+				;	Read opcode
-		ld	R_TEMP,R_PC+				;	read parameter
-#else
-		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
-		rjmp	decode_fetch				;2+n	18 Clk
-#endif
-		rjmp	vcpu6502core_exit_sfs			;	Exit emulation
-
 
 ;=== BYTE send / receive instructions:
 ;	USND1: Send A register bits to DAT:
@@ -1717,11 +2045,7 @@ uinstr_op_0x73:	ldi	R_TEMP3,(1 << IEC_PIN_CLOCK)		;tick = CLK
 #endif
 		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP		;Release CLK/DAT
 1:		rcall	_uinst_wait_line			;Wait CLK for selected level
-#ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA	;Skip, if next received bit (DAT line) 0
-#else
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA	;Skip, if next received bit (DAT line) 0
-#endif
+		si_skipiflinelow IEC_PIN_DATA			;Skip, if next received bit (DAT line) 0
 		ori	R_CADDRH,0x80
 		dec	R_CADDRL
 		brne	1b
@@ -1775,18 +2099,10 @@ uinstr_op_0xf3:	ldi	R_TEMP3,(1 << IEC_PIN_ATN)		;tick = ATN
 #endif
 		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP		;Release CLK/DAT/ATN
 1:		rcall	_uinst_wait_line			;Wait ATN for selected level
-#ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA	;Skip, if next received bit (DAT line) 0
-#else
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA	;Skip, if next received bit (DAT line) 0
-#endif
+		si_skipiflinelow IEC_PIN_DATA			;Skip, if next received bit (DAT line) 0
 		ori	R_CADDRH,0x80
 		lsr	R_CADDRH
-#ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK	;Skip, if next received bit (CLK line) 0
-#else
-		sbic	_SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK	;Skip, if next received bit (CLK line) 0
-#endif
+		si_skipiflinelow IEC_PIN_CLOCK			;Skip, if next received bit (CLK line) 0
 		ori	R_CADDRH,0x80
 		dec	R_CADDRL
 		brne	1b
@@ -1803,7 +2119,7 @@ _uinst_wait_line:
 		nop
 1:		sbis	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT
 		rjmp	2f						;Exit emulation
-		in	R_SAVEADDRL,_SFR_IO_ADDR(IEC_INPUT)
+		si_readbusdirect R_SAVEADDRL
 		and	R_SAVEADDRL,R_TEMP3				;Only "tick" line remain
 		cp	R_SAVEADDRL,R_TEMP2
 		brne	1b						;Wait for requested level
@@ -1817,76 +2133,162 @@ _uinst_wait_line:
 		pop	R_SAVEADDRL					;Drop return address
 		rjmp	vcpu6502core_exit_sfs				;Exit emulation
 
+  #if CONFIG_FASTSERIAL_MODE >= 1
+;=== Fast serial related comands
+;	FSTXB: Fast Serial Transmit one BYTE (send to host):
+uinstr_op_0x8f:	push	r24					;2
+		push	r0					;2
+		mov	r24, R_A				;1
+		call	fastser_sendbyte			;307	Send BYTE (not RCALL, a routine can be anywhere)
+		pop	r0					;2
+		pop	r24					;2
+		rjmp	0f					;2
+0:		rjmp	decode_fetch				;2+n	all: 320 CLK, "40T"
+
+;	FSRXB: Fast Serial Receive one BYTE (receive from host):
+uinstr_op_0x9f:	sbic	_SFR_IO_ADDR(globalflags),FASTSER_RECVRDY_BIT	;1/2/3
+		rjmp	1f						;2
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	uinstr_op_0x9f					;2
+		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
+1:		in	R_A,_SFR_IO_ADDR(fastserrecvb)			;1	Read received BYTE
+		cbi	_SFR_IO_ADDR(globalflags),FASTSER_RECVRDY_BIT	;2	12 Clk "1.5T" Clear Recv. flag
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall						;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch					;2
+#endif
+
+;	FSRXC: Fast Serial: check recv. flag:
+uinstr_op_0xaf:	in	R_TEMP,_SFR_IO_ADDR(globalflags)	;1
+		bst	R_TEMP,FASTSER_RECVRDY_BIT		;1
+		bld	R_SR,6					;1	FS Recv. flag -> SR B6 (V flag)
+		nop						;1
+		rjmp	decode_fetch				;2+n	12 Clk "1.5T"
+  #endif    // SRQ handling
+
+  #if (defined(HAVE_PARALLEL) && (VCPU_VERSION >= 2))
+;=== Parallel bus related commands
+;	PPACK: Parallel Port ACK: send 1 µSec "ACK" pulse ('DRWP') to host:
+uinstr_op_0x07:	cbi	_SFR_IO_ADDR(PARALLEL_HPORT), PARALLEL_HSK_OUT_BIT ;2	PORT bit = 0 (pullup disable + prepare OC Low)
+		sbi	_SFR_IO_ADDR(PARALLEL_HDDR), PARALLEL_HSK_OUT_BIT  ;2	DDR bit 1: switch to output and line Low
+		push	R_TEMP						;2
+		pop	R_TEMP						;2
+		rjmp	1f						;2
+1:		cbi	_SFR_IO_ADDR(PARALLEL_HDDR), PARALLEL_HSK_OUT_BIT  ;2	DDR bit 0: switch to input and line release
+		sbi	_SFR_IO_ADDR(PARALLEL_HPORT), PARALLEL_HSK_OUT_BIT ;2	PORT bit = 1 (pullup enable)
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall						;	20 Clk "2.5T" Fetch next opcode, execute
+#else
+		rjmp	decode_fetch					;2
+#endif
+
+;	PPDRD: Parallel Port Data ReaD: read port lines to A register:
+uinstr_op_0x17:	rjmp	1f					;2
+1:		in	R_A,_SFR_IO_ADDR(PARALLEL_PPIN)		;1
+		rjmp	3f					;2+n	16 Clk "2T"
+
+;	PPWDW: Parallel Port Wait ACK pulse ('HRWP') from host, and Data Write:
+uinstr_op_0x47:	sbic	_SFR_IO_ADDR(PARALLEL_IRQFLAG_REG),PARALLEL_IRQEN_BIT ;1/2/3
+		rjmp	1f					;2
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	uinstr_op_0x47				;2
+		rjmp	vcpu6502core_exit_sfs			;	
+1:		nop						;2	+4 = 20 Clk "2.5T"
+
+;	PPDWR: Parallel Port Data WRite: write port lines from A register:
+uinstr_op_0x27:	mov	R_TEMP,R_A				;1
+		com	R_TEMP					;1	Swap bits
+		out	_SFR_IO_ADDR(PARALLEL_PDDR),R_ZERO	;1	All lines to input
+		out	_SFR_IO_ADDR(PARALLEL_PPORT),R_A	;1	Enable pullups on '1' lines, prepare OC low on '0' lines
+		out	_SFR_IO_ADDR(PARALLEL_PDDR),R_TEMP	;1	Set '0' lines to output (drive low this lines)
+3:		rjmp	2f					;2
+2:		nop						;1
+		ldi	R_TEMP,(1 << PARALLEL_IRQEN_BIT)	   ;1
+		out	_SFR_IO_ADDR(PARALLEL_IRQFLAG_REG),R_TEMP  ;1	Clear pending IRQ ('HRWFLAG')
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall						;	16 Clk "2T" Fetch next opcode, execute
+#else
+		rjmp	decode_fetch					;2
+#endif
+
+;	PPWAI: Parallel Port WAIt ACK pulse ('HRWP') from host:
+uinstr_op_0x37:	nop							;1
+1:		sbis	_SFR_IO_ADDR(PARALLEL_IRQFLAG_REG),PARALLEL_IRQEN_BIT ;1/2/3
+		rjmp	2f						;2	Wait for 'HRWFLAG'
+		sbic	_SFR_IO_ADDR(PARALLEL_HPIN),PARALLEL_HSK_IN_BIT	;1/2/3	SKIP, if ACK line is low
+		rjmp	decode_fetch					;2+n	12 Clk, minimal delay "1.5T"
+2:		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	1b						;2
+		rjmp	vcpu6502core_exit_sfs				;	Exit emulation
+
+  #endif    // Parallel bus handling
+#endif    // Only CBM serial interface
+
+
+
+;=== Cycle instructions:
+;	UINDB: Increment index, Decrement counter, Branch if no underrun:
+uinstr_op_0xab:	ld	R_TEMP,R_PC+				;2	Read offset
+		inc	R_X					;1	Increment index
+		subi	R_Y,0x01				;1	Decrement BYTE-counter
+		brcs	1f					;1/2	12 Clk: "1.5T"
+		add	R_PCL,R_TEMP				;1
+		adc	R_PCH,R_ZERO				;1
+		sbrc	R_TEMP,7				;1/2/3
+		dec	R_PCH					;1
+#ifdef INSTRTABLEALIGNED
+		ld	R_IR,R_PC+				;2
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		ijmp						;2	16+4 Clk: "2T"
+		rjmp	uinstr_jmpexit				;	Exit
+#else
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	decode_fetch				;2+n
+		rjmp	vcpu6502core_exit_sfs			;	Exit emulation
+#endif
+
+;	UDEDB: Decrement index, Decrement counter, Branch if no underrun:
+uinstr_op_0xbb:	ld	R_TEMP,R_PC+				;2	Read offset
+		dec	R_X					;1	Decrement index
+		subi	R_Y,0x01				;1	Decrement BYTE-counter
+		brcs	1f					;1/2	12 Clk: "1.5T"
+		add	R_PCL,R_TEMP				;1
+		adc	R_PCH,R_ZERO				;1
+		sbrc	R_TEMP,7				;1/2/3
+		dec	R_PCH					;1
+#ifdef INSTRTABLEALIGNED
+		ld	R_IR,R_PC+				;2
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		ijmp						;2	16+4 Clk: "2T"
+uinstr_jmpexit:	sbiw	R_PC,0x03
+		ld	R_IR,R_PC+				;	Read opcode
+		ld	R_TEMP,R_PC+				;	read parameter
+#else
+		sbic	_SFR_IO_ADDR(VCPURUNFLAG_REG),VCPURUNFLAG_BIT	;1/2/3
+		rjmp	decode_fetch				;2+n	18 Clk
+#endif
+		rjmp	vcpu6502core_exit_sfs			;	Exit emulation
+
+1:
+#ifdef INSTRTABLEALIGNED
+		opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
+#else
+		rjmp	decode_fetch				;2
+#endif
+
+
+
 
 ;=== Delay:
 ;	UDELY #$xx: "xT" delay:
 uinstr_op_0xfb:	ld	R_TEMP,R_PC+				;2	Read "time"
 		tst	R_TEMP					;1
 		brne	1f					;1/2
-uinstr_decfetc:	rjmp	decode_fetch				;2+n	12 Clk: "1.5T" + x × "0.5T"
+3:		rjmp	decode_fetch				;2+n	12 Clk: "1.5T" + x × "0.5T"
 1:		dec	R_TEMP					;1
-		breq	uinstr_decfetc				;1/2	16 Clk: "2T"
+		breq	3b					;1/2	16 Clk: "2T"
 		rjmp	1b					;2
-
-;	UTEST:
-uinstr_op_0xeb:
-#ifdef IEC_OUTPUTS_INVERTED
-		com	R_A
-#endif
-		in	R_TEMP,_SFR_IO_ADDR(IEC_OUTPUT)
-		bst	R_A,7
-		bld	R_TEMP,IEC_OPIN_DATA
-		bst	R_A,6
-		bld	R_TEMP,IEC_OPIN_CLOCK
-		bst	R_A,5
-		bld	R_TEMP,IEC_OPIN_ATN
-#ifdef SRQHANDLE
-		bst	R_A,4
-		bld	R_TEMP,IEC_OPIN_SRQ
-#endif
-		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP
-		nop
-		in	R_A,_SFR_IO_ADDR(IEC_INPUT)
-		in	R_X,_SFR_IO_ADDR(IEC_INPUT)
-		in	R_Y,_SFR_IO_ADDR(IEC_INPUT)
-		in	R_SP,_SFR_IO_ADDR(IEC_INPUT)
-		rjmp	decode_fetch				;2+n
-
-#else		// No CBM serial interface
-uinstr_op_0x03:
-uinstr_op_0x13:
-uinstr_op_0x23:
-uinstr_op_0x33:
-uinstr_op_0x43:
-uinstr_op_0x53:
-uinstr_op_0x63:
-uinstr_op_0x73:
-uinstr_op_0x83:
-uinstr_op_0x93:
-uinstr_op_0xa3:
-uinstr_op_0xb3:
-uinstr_op_0xc3:
-uinstr_op_0xd3:
-uinstr_op_0xe3:
-uinstr_op_0xf3:
-uinstr_op_0x0b:
-uinstr_op_0x1b:
-uinstr_op_0x2b:
-uinstr_op_0x3b:
-uinstr_op_0x4b:
-uinstr_op_0x5b:
-uinstr_op_0x6b:
-uinstr_op_0x7b:
-uinstr_op_0x8b:
-uinstr_op_0x9b:
-uinstr_op_0xab:
-uinstr_op_0xbb:
-uinstr_op_0xdb:
-uinstr_op_0xeb:
-uinstr_op_0xfb:
-		rjmp	ninstr_hangup
-#endif
-
 ;=============================================
 ;===	Address decoders for addressing modes:
 
@@ -1967,9 +2369,12 @@ read_memory:	cpi	R_CADDRH,CONFIG_BUFFER_COUNT		;1	VCPU RAM?
 1:		cpi	R_CADDRH,(VCPU_ADDR_IO >> 8)		;1	VCPU I/O?
 		brne	3f
 
-read_io:	rjmp	4f					;2	Delay 4Clk. RCALL + 5Clk. RET
-4:		andi	R_CADDRL,VCPU_MAXIO_MASK		;1	Max. 16 Readable I/O address
-		movw	R_IR,R_RDIO				;1
+read_io:	;rjmp	4f					;2	Delay 4Clk. RCALL + 5Clk. RET
+4:		;andi	R_CADDRL,VCPU_MAXIO_SIZE-1		;1	Max. 16 Readable I/O address
+		cpi	R_CADDRL,VCPU_MAXIO_SIZE		;1
+		brcc	5f					;1/2
+		ldi	R_IRH,pm_hi8(readiotable)		;1
+		ldi	R_IR,pm_lo8(readiotable)		;1
 		add	R_IR,R_CADDRL				;1
 #ifndef INSTRTABLEALIGNED
 		adc	R_IRH,R_ZERO				;1
@@ -1978,12 +2383,16 @@ read_io:	rjmp	4f					;2	Delay 4Clk. RCALL + 5Clk. RET
 
 3:		rcall	checkaddr_bufs				;3+
 		brcc	2b					;1/2	If address is good, read memory
-		pop	R_TEMP
+5:		pop	R_TEMP
 		pop	R_TEMP					;	If address error: drop return address
 		rjmp	_rwaddr_error				;	Exit with error
 
-;	Write "A" register to 6502 memory, fetch next instruction
-write_memory_a:	mov	R_TEMP,R_A				;1	8+n
+;	Write back 6502 memory (end of RMW cycle), fetch next instruction
+writeback_memory:
+		mov	R_S_Z,R_TEMP				;1
+		mov	R_S_N,R_S_Z				;1
+		movw	R_CADDR,R_SAVEADDR			;1
+
 ;	Write 6502 memory, fetch next instruction
 write_memory:	cpi	R_CADDRH,CONFIG_BUFFER_COUNT		;1	7+n
 		brcc	1f					;1/2
@@ -2003,11 +2412,16 @@ write_memory:	cpi	R_CADDRH,CONFIG_BUFFER_COUNT		;1	7+n
 1:		cpi	R_CADDRH,(VCPU_ADDR_IO >> 8)		;1	VCPU I/O?
 		brne	3f
 
-write_io:	andi	R_CADDRL,VCPU_MAXIO_MASK		;1	Max. 16 Writeable I/O address
-		movw	R_IR,R_WRIO				;1
-		add	R_IR,R_CADDRL				;1
+write_io:	;andi	R_CADDRL,VCPU_MAXIO_SIZE-1		;1	Max. 16 Writeable I/O address
+		cpi	R_CADDRL,VCPU_MAXIO_SIZE		;1
+		brcc	_rwaddr_error				;1/2
+		ldi	R_IRH,pm_hi8(writeiotable)		;1
 #ifndef INSTRTABLEALIGNED
+		ldi	R_IR,pm_lo8(writeiotable)		;1
+		add	R_IR,R_CADDRL				;1
 		adc	R_IRH,R_ZERO				;1
+#else
+		mov	R_IR,R_CADDRL				;1	Write table jump table address is 0xXX00
 #endif
 		ijmp						;2
 
@@ -2043,7 +2457,7 @@ checkaddr_bufs:	cpi	R_CADDRH,(VCPU_ADDR_COMMANDBUFFER >> 8)	;1	Command buffer?
 ;=============================================
 ;===	I/O routines:
 ;===	Readable registers:
-readio_version:	ldi	R_TEMP,(VCPU_BUSTYPE<<5)|VCPU_VERSION
+readio_version:	ldi	R_TEMP,(VCPU_BUSTYPE_REP<<5)|VCPU_VERSION
 		rjmp	readio_common
 
 readio_memiosize:
@@ -2070,27 +2484,71 @@ readio_hidbits:	clr	R_TEMP
 		sbis	_SFR_IO_ADDR(SOFTI2C_PIN),SOFTI2C_BIT_INTRQ
 		ori	R_TEMP,0b00100000
 #endif
+
+#ifndef BUTTONS_SPECIAL
 		sbis	_SFR_IO_ADDR(BUTTONS_INPUT),BUTTONS_PREV_PIN
 		ori	R_TEMP,0b01000000
 		sbis	_SFR_IO_ADDR(BUTTONS_INPUT),BUTTONS_NEXT_PIN
 		ori	R_TEMP,0b10000000
+#else
+		in	R_TEMP2,_SFR_IO_ADDR(BUTTONS_MUX_DDR)
+		push	R_TEMP2
+		andi	R_TEMP2,~(1<<BUTTONS_NEXT_PIN | 1<<BUTTONS_PREV_PIN)
+		out	_SFR_IO_ADDR(BUTTONS_MUX_DDR),R_TEMP2
+		in	R_TEMP2,_SFR_IO_ADDR(BUTTONS_MUX_PORT)
+		push	R_TEMP2
+		ori	R_TEMP2,(1<<BUTTONS_NEXT_PIN | 1<<BUTTONS_PREV_PIN)
+		out	_SFR_IO_ADDR(BUTTONS_MUX_PORT),R_TEMP2
+		pop	R_TEMP2
+		in	R_TEMP3,_SFR_IO_ADDR(BUTTONS_INPUT)
+		out	_SFR_IO_ADDR(BUTTONS_MUX_PORT),R_TEMP2
+		pop	R_TEMP2
+		out	_SFR_IO_ADDR(BUTTONS_MUX_DDR),R_TEMP2
+		sbrs	R_TEMP3,BUTTONS_PREV_PIN
+		ori	R_TEMP,0b01000000
+		sbrs	R_TEMP3,BUTTONS_NEXT_PIN
+		ori	R_TEMP,0b10000000
+#endif
 		rjmp	readio_common
 
 readio_deviceaddress:
 		lds	R_TEMP,device_address
 #ifndef DEVICE_DEFAULT_UNITNO
+  #if _SFR_IO_ADDR(DEVICE_HW_ADDR_PIN) < 0x20
 		sbis	_SFR_IO_ADDR(DEVICE_HW_ADDR_PIN),DEVICE_HW_ADDR_B0
 		ori	R_TEMP,0b01000000
 		sbis	_SFR_IO_ADDR(DEVICE_HW_ADDR_PIN),DEVICE_HW_ADDR_B1
 		ori	R_TEMP,0b10000000
+  #else
+		in	R_TEMP2,_SFR_IO_ADDR(DEVICE_HW_ADDR_PIN)
+		sbrs	R_TEMP2,DEVICE_HW_ADDR_B0
+		ori	R_TEMP,0b01000000
+		sbrs	R_TEMP2,DEVICE_HW_ADDR_B1
+		ori	R_TEMP,0b10000000
+  #endif
 #endif
 		rjmp	readio_common
 
-readio_hostspd:	ldi	R_TEMP,CONFIG_MCU_FREQ/1000000		;Host Speed in MHz
+readio_hostspd:
+#ifdef CONFIG_UART_DEBUG
+		lds	R_TEMP,UCSRA
+		sbrs	R_TEMP,RXC0			;SKIP, if received data present
+		rjmp	1f
+		lds	R_TEMP,UDR			;Read received BYTE from UART data register
+		ori	R_SR,0x40			;Set 6502 "V" flag, new received BYTE
+		rjmp	readio_common
+1:
+#endif
+		ldi	R_TEMP,CONFIG_MCU_FREQ/1000000		;Host Speed in MHz
 		rjmp	readio_common
 
-readio_checkfw:	mov	R_TEMP,R_INSTRTL
+readio_checkfw:	ldi	R_TEMP,pm_lo8(instrtable)
 		or	R_TEMP,R_RAML
+		rjmp	readio_common
+
+;	Firmware "globalflags" variable
+readio_globalflags:
+		in	R_TEMP,_SFR_IO_ADDR(globalflags)
 		rjmp	readio_common
 
 ;	Binary to Decimal converter, result registers:
@@ -2117,6 +2575,7 @@ readio_cbmseraso:
 		sbic	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_ATN	;1/2/3
   #endif
 		ori	R_TEMP,0x80				;1
+
   #ifdef SRQHANDLE
     #ifdef IEC_OUTPUTS_INVERTED
 		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_SRQ	;1/2/3
@@ -2127,28 +2586,21 @@ readio_cbmseraso:
 		nop						;1
   #endif
 		ori	R_TEMP,0x40				;1
-		movw	R_IR,R_INSTRT				;1
+		setinstr					;1(2)
 		ret						;4
 ;	ATN/SRQ Lines read back:
 readio_cbmserasi:
 		clr	R_TEMP					;1
-  #ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_ATN	;1/2/3
-  #else
-		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_ATN	;1/2/3
-  #endif
+		si_skipiflinelow IEC_PIN_ATN			;1/2/3
 		ori	R_TEMP,0x80				;1
+
   ;#ifdef SRQHANDLE
-    #ifdef IEC_INPUTS_INVERTED
-		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_SRQ	;1/2/3
-    #else
-		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_SRQ	;1/2/3
-    #endif
+		si_skipiflinelow IEC_PIN_SRQ			;1/2/3
   ;#else
   ;		nop						;1
   ;#endif
 		ori	R_TEMP,0x40
-		movw	R_IR,R_INSTRT				;1
+		setinstr					;1(2)
 		ret						;4
 
 ;	DAT/CLK Lines output register read (B1=DAT, B0=CLK)
@@ -2166,56 +2618,61 @@ readio_cbmserdco:
 		sbis	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_DATA	;1/2/3
   #endif
 		andi	R_TEMP,0x55				;1
-		movw	R_IR,R_INSTRT				;1
+		setinstr					;1(2)
 		ret						;4
 
 ;	DAT/CLK Lines read back (B7=DAT, B6=CLK)
 readio_cbmserin:
 		ldi	R_TEMP,0xc0				;1
-		in	R_TEMP2,_SFR_IO_ADDR(IEC_INPUT)		;1
-  #ifdef IEC_INPUTS_INVERTED
-		sbrc	R_TEMP2,IEC_PIN_CLOCK			;1/2/3
-  #else
-		sbrs	R_TEMP2,IEC_PIN_CLOCK			;1/2/3
-  #endif
+		si_readbusdirect R_TEMP2			;1
+		si_skipifregbhigh R_TEMP2,IEC_PIN_CLOCK		;1/2/3
 		andi	R_TEMP,0xaa				;1
-  #ifdef IEC_INPUTS_INVERTED
-		sbrc	R_TEMP2,IEC_PIN_DATA			;1/2/3
-  #else
-		sbrs	R_TEMP2,IEC_PIN_DATA			;1/2/3
-  #endif
+		si_skipifregbhigh R_TEMP2,IEC_PIN_DATA		;1/2/3
 		andi	R_TEMP,0x55				;1
-		movw	R_IR,R_INSTRT				;1
+		setinstr					;1(2)
 		ret						;4
 
 ;	CLK Line read back (B7=CLK)
 readio_cbmserci:
 		ldi	R_TEMP,0x80				;1
-  #ifdef IEC_INPUTS_INVERTED
-		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_CLOCK	;1/2/3
-  #else
-		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_CLOCK	;1/2/3
-  #endif
+		si_skipiflinehigh IEC_PIN_CLOCK			;1/2/3
 		ldi	R_TEMP,0x00				;1	CLK line low
-		movw	R_IR,R_INSTRT				;1
+		setinstr					;1(2)
 		ret						;4
 
 ;	DAT Line read back (B7=DAT)
 readio_cbmserdi:
 		ldi	R_TEMP,0x80				;1
-  #ifdef IEC_INPUTS_INVERTED
-		sbic	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_DATA	;1/2/3
-  #else
-		sbis	_SFR_IO_ADDR(IEC_INPUT),IEC_PIN_DATA	;1/2/3
-  #endif
+		si_skipiflinehigh IEC_PIN_DATA			;1/2/3
 		ldi	R_TEMP,0x00				;1	CLK line low
-		movw	R_IR,R_INSTRT				;1
+		setinstr					;1(2)
 		ret						;4
+
+;	Parallel port registers:
+  #if (defined(HAVE_PARALLEL) && (VCPU_VERSION >= 2))
+;	Parallel port lines read:
+readio_parlines:
+		in	R_TEMP,_SFR_IO_ADDR(PARALLEL_PPIN)	;1	Read port input register
+		setinstr					;1(2)
+		ret						;4
+;	Parallel port auxilary read:
+readio_paraux:	ldi	R_TEMP,0x02					;1	%00000010 B543 = 0, B1 = 1
+		sbic	_SFR_IO_ADDR(PARALLEL_HPIN),PARALLEL_HSK_IN_BIT	;1/2/3	SKIP, if 'HRWP' line low
+		ori	R_TEMP,0x80					;1	'HRWP' line is '1' -> B7
+		sbic	_SFR_IO_ADDR(PARALLEL_IRQFLAG_REG),PARALLEL_IRQEN_BIT ;1/2/3
+		ori	R_TEMP,0x40					;1	'HRWFLAG' is '1' -> B6
+		sbis	_SFR_IO_ADDR(PARALLEL_HDDR),PARALLEL_HSK_OUT_BIT ;1/2/3	SKIP, if 'DRWP' drive to low
+		ori	R_TEMP,0x04					;1	'DRWP' bit -> B2
+		sbic	_SFR_IO_ADDR(PARALLEL_HPIN),PARALLEL_HSK_OUT_BIT ;1/2/3	SKIP, if 'DRWP' LINE is low
+		ori	R_TEMP,0x01					;1	Line state -> B0
+		setinstr					;1(2)
+		ret						;4
+  #endif    // Parallel port registers
 
 #endif	// CBM Serial lines I/O
 
-readio_na:	ldi	R_TEMP,0x00				;1	%00000000: not implemented function bits = 0
-readio_common:	movw	R_IR,R_INSTRT				;1	Restore IRH/IR
+readio_na:	ldi	R_TEMP,0x00				;1	%00000000: not implemented (readable) register bits = 0
+readio_common:	setinstr					;1(2)	Restore IRH/IR
 		ret						;4
 
 
@@ -2250,7 +2707,17 @@ writeio_hidbits:
 #endif
 		rjmp	writeio_na				;3+n
 
-;	Convert binary to decimal numbers: A (0..$ff) => high:mid:low (000..255)
+
+#ifdef CONFIG_UART_DEBUG
+writeio_dbg_uarttx:
+		lds	R_TEMP2,UCSRA
+		sbrs	R_TEMP2,UDRE0		;SKIP, if USART Data Register Empty set
+		rjmp	writeio_dbg_uarttx	;If not empty, wait...
+		sts	UDR,R_TEMP		;Transmit data
+		rjmp	writeio_na
+#endif
+
+;	Convert binary to decimal numbers: R_TEMP (0..$ff) => high:mid:low (000..255)
 ;	Bin to Dec:
 writeio_convbin2dec:
 		ldi	R_TEMP2,0x00
@@ -2282,19 +2749,28 @@ writeio_convbin2asc:
 writeio_cbmseraso:
   #ifdef IEC_OUTPUTS_INVERTED
 		com	R_TEMP					;1
-  #else
-		nop						;1
   #endif
 		in	R_TEMP2,_SFR_IO_ADDR(IEC_OUTPUT)	;1
 		bst	R_TEMP,7				;1
 		bld	R_TEMP2,IEC_OPIN_ATN			;1
-		bst	R_TEMP,6				;1
   #ifdef SRQHANDLE
+    #ifndef IEC_SEPARATE_OUT
+		cbi	_SFR_IO_ADDR(IEC_PORT),IEC_PIN_SRQ	;2	SRQ pullup off (Don't drive SRQ to high!)
+    #endif
+		bst	R_TEMP,6				;1
 		bld	R_TEMP2,IEC_OPIN_SRQ			;1
-  #else
-		nop						;1
   #endif
 		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2	;1
+  #ifdef SRQHANDLE
+    #ifndef IEC_SEPARATE_OUT
+      #ifdef IEC_OUTPUTS_INVERTED
+		sbrs	R_TEMP2,IEC_OPIN_SRQ			;1/2/3	SKIP, if SRQ pin drive Low
+      #else
+		sbrc	R_TEMP2,IEC_OPIN_SRQ			;1/2/3	SKIP, if SRQ pin drive Low
+      #endif
+		sbi	_SFR_IO_ADDR(IEC_PORT),IEC_PIN_SRQ	;2	If SRQ is HiZ, SRQ pullup on
+    #endif
+  #endif
 		rjmp	writeio_na				;3+n
 
 ;	DAT/CLK Lines output register write (B1=DAT, B0=CLK)
@@ -2338,157 +2814,78 @@ writeio_cbmserdo:
 		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2	;1
 		rjmp	writeio_na				;3+n
 
+  #if (defined(HAVE_PARALLEL) && (VCPU_VERSION >= 2))
+;	Parallel port lines write:
+writeio_parlines:
+		mov	R_TEMP2,R_TEMP				;1
+		com	R_TEMP2					;1	Swap bits
+		out	_SFR_IO_ADDR(PARALLEL_PDDR),R_ZERO	;1	All lines to input
+		out	_SFR_IO_ADDR(PARALLEL_PPORT),R_TEMP	;1	Enable pullups on '1' lines, prepare OC low on '0' lines
+		out	_SFR_IO_ADDR(PARALLEL_PDDR),R_TEMP2	;1	Set '0' lines to output (drive low this lines)
+		rjmp	writeio_na				;3+n
+;	Parallel port auxilary write:
+writeio_paraux:	sbrc	R_TEMP,2				;1/2/3	SKIP if B2 ('DRWP' out) =0
+		rjmp	1f
+		cbi	_SFR_IO_ADDR(PARALLEL_HPORT), PARALLEL_HSK_OUT_BIT ;2	PORT bit = 0 (pullup disable + prepare OC Low)
+		sbi	_SFR_IO_ADDR(PARALLEL_HDDR), PARALLEL_HSK_OUT_BIT  ;2	DDR bit 1: switch to output and line Low
+		rjmp	2f
+1:		cbi	_SFR_IO_ADDR(PARALLEL_HDDR), PARALLEL_HSK_OUT_BIT  ;2	DDR bit 0: switch to input and line release
+		sbi	_SFR_IO_ADDR(PARALLEL_HPORT), PARALLEL_HSK_OUT_BIT ;2	PORT bit = 1 (pullup enable)
+2:		ldi	R_TEMP2,(1 << PARALLEL_IRQEN_BIT)		;1
+		sbrc	R_TEMP,4					;1/2/3	SKIP if B4 (clear 'HRWFLAG') is 0
+		out	_SFR_IO_ADDR(PARALLEL_IRQFLAG_REG), R_TEMP2	;1	Clear 'HRWFLAG'
+		rjmp	writeio_na				;3+n
+  #endif    // Parallel port registers
+
+;	Serial Linediag
+writeio_linediag:
+  #ifdef VCPU_LINEDIAG
+    #ifdef IEC_OUTPUTS_INVERTED
+		com	R_TEMP
+    #endif
+		in	R_TEMP2,_SFR_IO_ADDR(IEC_OUTPUT)
+		bst	R_TEMP,7
+		bld	R_TEMP2,IEC_OPIN_DATA
+		bst	R_TEMP,6
+		bld	R_TEMP2,IEC_OPIN_CLOCK
+		bst	R_TEMP,5
+		bld	R_TEMP2,IEC_OPIN_ATN
+    #ifdef SRQHANDLE
+      #ifndef IEC_SEPARATE_OUT
+		cbi	_SFR_IO_ADDR(IEC_PORT),IEC_PIN_SRQ	;SRQ pullup off (Don't drive SRQ to high!)
+      #endif
+		bst	R_TEMP,4
+		bld	R_TEMP2,IEC_OPIN_SRQ
+    #endif
+		out	_SFR_IO_ADDR(IEC_OUTPUT),R_TEMP2
+		nop
+		si_readbusdirect R_TEMP
+		si_readbusdirect R_TEMP2
+		si_readbusdirect R_TEMP3
+		si_readbusdirect R_IRH
+		ldi	R_CADDRL,lo8(error_buffer)
+		ldi	R_CADDRH,hi8(error_buffer)
+		st	R_CADDR+,R_TEMP
+		st	R_CADDR+,R_TEMP2
+		st	R_CADDR+,R_TEMP3
+		st	R_CADDR+,R_IRH
+    #ifdef SRQHANDLE
+      #ifndef IEC_SEPARATE_OUT
+		sbrs	_SFR_IO_ADDR(IEC_OUTPUT),IEC_OPIN_SRQ	;SKIP, if DDR bit switched to output (and line pulled low)
+		sbi	_SFR_IO_ADDR(IEC_PORT),IEC_PIN_SRQ	;SRQ pullup on, if SRQ pin is input
+      #endif
+    #endif
+		;rjmp	writeio_na				;	Next routine, jump not needed
+  #endif  // VCPU_LINEDIAG
 #endif	// CBM Serial lines I/O
 
 ;	Unimplemented register write, no function:
-writeio_na:	movw	R_IR,R_INSTRT				;1
+writeio_na:	setinstr					;1(2)
 #ifdef INSTRTABLEALIGNED
 		opcodefetchcall					;	Fetch next opcode, execute (4(7)+2)
 #else
 		rjmp	decode_fetch				;2
 #endif
-;=============================================
-;===	6502 emulation entry:
 
-  .global vcpu6502core
-
-vcpu6502core:	push	R_INSTRTL			;R2
-		push	R_INSTRTH			;R3
-		push	R_RDIOL				;R4
-		push	R_RDIOH				;R5
-		push	R_WRIOL				;R6
-		push	R_WRIOH				;R7
-		push	R_RAML				;R8
-		push	R_RAMH				;R9
-		push	R_SAVEADDRL			;R10
-		push	R_SAVEADDRH			;R11
-		push	R_ZPL				;R12
-		push	R_ZPH				;R13
-		push	R_S_Z				;R14
-		push	R_S_N				;R15
-		push	R_A				;R16
-		push	R_X				;R17
-		push	R_Y				;R18
-		push	R_SR				;R19
-#ifndef CPUMEMORYALIGNED
-		push	R_SPL				;R20
-#endif
-		push	R_SPH				;R21
-		push	R_SP				;R22 / R20
-		push	R_TEMP				;R23
-		push	R_TEMP2				;R24
-		push	R_TEMP3				;R25
-		push	R_PCL				;R26 (XL)
-		push	R_PCH				;R27 (XH)
-		push	R_CADDRL			;R28 (YL)
-		push	R_CADDRH			;R29 (YH)
-		push	R_IR				;R30 (ZL)
-		push	R_IRH				;R31 (ZH)
-
-		rcall	cpustateload			;Load 6502 state
-		rcall	movesreg_to_zn
-;#ifdef INSTRTABLEALIGNED
-		tst	R_INSTRTL
-		brne	align_error
-;#endif
-;#ifdef CPUMEMORYALIGNED
-		tst	R_RAML
-		brne	align_error
-;#endif
-		rcall	1f
-		subi	R_TEMP,-2			;AVR with 16 bit PC: xCALL push 2 BYTEs to STACK
-		in	R_TEMP2,_SFR_IO_ADDR(SPL)
-		cp	R_TEMP,R_TEMP2
-		brne	align_error
-		rjmp	calc_pc				;Calculate PC, fetch next instruction
-1:		in	R_TEMP,_SFR_IO_ADDR(SPL)
-		ret
-
-
-
-common_readmemtoa:
-
-		rcall	read_memory			;12/13 (RAM)
-		mov	R_A,R_TEMP			;1
-
-decode_setnz_a:	mov	R_S_Z,R_A			;1
-decode_setn:	mov	R_S_N,R_S_Z			;1
-decode_fetch:	opcodefetchcall				;4/7
-
-decode_setnz_x:	mov	R_S_Z,R_X			;1
-		mov	R_S_N,R_S_Z			;1
-#ifdef INSTRTABLEALIGNED
-		opcodefetchcall				;	Fetch next opcode, execute (4(7)+2)
-#else
-		rjmp	decode_fetch			;2
-#endif
-
-decode_setnz_y:	mov	R_S_Z,R_Y			;1
-		mov	R_S_N,R_S_Z			;1
-#ifdef INSTRTABLEALIGNED
-		opcodefetchcall				;	Fetch next opcode, execute (4(7)+2)
-#else
-		rjmp	decode_fetch			;2
-#endif
-
-
-
-align_error:	ldi	R_TEMP,VCPU_ERROR_ALIGN		;Set "Align Error" flag
-		rjmp	vcpu6502core_exit
-ninstr_hangup:	ldi	R_TEMP,VCPU_ERROR_HANGUP	;Set "hangup" flag
-		rjmp	vcpu6502core_exit
-
-vcpu6502core_exit_sfs:
-		ldi	R_TEMP,0x00			;No NEW flag
-
-vcpu6502core_exit:
-		rcall	movezn_to_sreg			;Copy Z/N bits to SREG BYTE
-		rcall	cpustatesave			;Save 6502 state
-
-		cpi	R_PCH,CONFIG_BUFFER_COUNT	;PC is higher than valid memory address?
-		brcs	1f				;If no, OK
-		ori	R_TEMP,VCPU_ERROR_ILLEGALFC	;If yes, set FLAG
-1:		cli
-		lds	R_TEMP2,vcpureg_interrupt
-		or	R_TEMP2,R_TEMP
-		lds	R_TEMP,interruptcode		;Requested / early saved interrupt flag
-		or	R_TEMP2,R_TEMP
-		sts	vcpureg_interrupt,R_TEMP2
-		sei
-
-		pop	R_IRH				;R31 (ZH)
-		pop	R_IR				;R30 (ZL)
-		pop	R_CADDRH			;R29 (YH)
-		pop	R_CADDRL			;R28 (YL)
-		pop	R_PCH				;R27 (XH)
-		pop	R_PCL				;R26 (XL)
-		pop	R_TEMP3				;R25
-		pop	R_TEMP2				;R24
-		pop	R_TEMP				;R23
-
-		pop	R_SP				;R22 / R20
-		pop	R_SPH				;R21
-#ifndef CPUMEMORYALIGNED
-		pop	R_SPL				;R20
-#endif
-		pop	R_SR				;R19
-		pop	R_Y				;R18
-		pop	R_X				;R17
-		pop	R_A				;R16
-		pop	R_S_N				;R15
-		pop	R_S_Z				;R14
-		pop	R_ZPH				;R13
-		pop	R_ZPL				;R12
-		pop	R_SAVEADDRH			;R11
-		pop	R_SAVEADDRL			;R10
-		pop	R_RAMH				;R9
-		pop	R_RAML				;R8
-		pop	R_WRIOH				;R7
-		pop	R_WRIOL				;R6
-		pop	R_RDIOH				;R5
-		pop	R_RDIOL				;R4
-		pop	R_INSTRTH			;R3
-		pop	R_INSTRTL			;R2
-		ret
 ;=============================================
 ;=============================================

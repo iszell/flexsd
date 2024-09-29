@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -53,7 +53,9 @@
 #include "utils.h"
 #include "wrapops.h"
 #include "doscmd.h"
+#include "burstcmd.h"
 #include "vcpu6502emu.h"
+#include "timer.h"
 
 #define CURSOR_RIGHT 0x1d
 
@@ -1254,7 +1256,7 @@ static void handle_memread(void) {
 /* helper function for copying to capture buffer, needed twice */
 static void capture_fl_data(uint16_t address, uint8_t length) {
   uint8_t dataofs = capture_address - address;
-  uint8_t bytes   = min(capture_remain, length - dataofs);
+  uint8_t bytes   = min(capture_remain, (uint16_t)length - dataofs);
 
   memcpy(capture_buffer->data + capture_offset,
          command_buffer + 6 + dataofs,
@@ -1466,19 +1468,25 @@ static void parse_position(void) {
     buf->seek(buf, record * (uint32_t)buf->recordlen, pos);
   } else {
     /* Non-REL seek uses a straight little-endian offset */
-    union {
-      uint32_t l;
-      uint8_t  c[4];
-    } offset;
-
-    // smaller than memcpy
-    /* WARNING: Endian-dependant */
-    offset.c[0] = command_buffer[2];
-    offset.c[1] = command_buffer[3];
-    offset.c[2] = command_buffer[4];
-    offset.c[3] = command_buffer[5];
-
-    buf->seek(buf, offset.l, 0);
+//    union {
+//      uint32_t l;
+//      uint8_t  c[4];
+//    } offset;
+//
+//    // smaller than memcpy
+//    /* WARNING: Endian-dependant */
+//    offset.c[0] = command_buffer[2];
+//    offset.c[1] = command_buffer[3];
+//    offset.c[2] = command_buffer[4];
+//    offset.c[3] = command_buffer[5];
+//    buf->seek(buf, offset.l, 0);
+    /* Maybe equal code size as above, but not endian-dependant */
+    register uint32_t offset;
+    offset = (((uint32_t)command_buffer[5] << 24) |
+              ((uint32_t)command_buffer[4] << 16) |
+              ((uint32_t)command_buffer[3] << 8) |
+              ((uint32_t)command_buffer[2]));
+    buf->seek(buf, offset, 0);
   }
 }
 
@@ -1902,6 +1910,7 @@ static void parse_user(void) {
     break;
 
   case '0':
+#if CONFIG_FASTSERIAL_MODE < 2
     /* U0 - only device address changes for now */
     if ((command_buffer[2] & 0x1f) == 0x1e &&
         command_buffer[3] >= 4 &&
@@ -1910,6 +1919,11 @@ static void parse_user(void) {
       display_address(device_address);
       break;
     }
+#else
+    delay_us(250);                  // Wait a moment (CLK/DAT lines maybe released by host)
+    if (!(parse_burstcommands()))
+      break;
+#endif
     /* Fall through */
 
   default:
@@ -2080,6 +2094,17 @@ static void parse_xcommand(void) {
   case 'Z': // fast save
     save_dolphin();
     break;
+
+  case 'P': // Parallel mode enable / disable:
+    if (command_buffer[2] == '+') {
+      xbusen_config |= 0x04;
+      parallel_configure();
+    } else if (command_buffer[2] == '-') {
+      xbusen_config &= ~0x04;
+      parallel_configure();
+    } else
+      set_error(ERROR_SYNTAX_UNABLE);
+    break;
 #endif
 
   default:
@@ -2098,6 +2123,7 @@ static void parse_xcommand(void) {
 /* --------------------------------- */
 /* Z commands (VCPU: 6502 emulation) */
 /* --------------------------------- */
+/* Warning: "ZD" cannot be used, it conflicts with "MD"/"CD"/"RD" commands */
 static void parse_zcommands(void) {
   uint8_t *ptr = error_buffer;
   uint16_t addr = 0;
@@ -2110,7 +2136,7 @@ static void parse_zcommands(void) {
     len = command_buffer[4];
   }
   switch (command_buffer[1]) {
-    case 'B': {           /* Send buffers status ("buffer flags" + secondary address) */
+    case 'B':             /* Send buffers status ("buffer flags" + secondary address) */
       for (uint8_t a = 0; a < CONFIG_BUFFER_COUNT; a++) {
         *ptr++ = (buffers[a].allocated |
                  (buffers[a].mustflush << 1) |
@@ -2123,8 +2149,7 @@ static void parse_zcommands(void) {
       }
       buffers[ERRORBUFFER_IDX].lastused = (CONFIG_BUFFER_COUNT*2)-1;
       break;
-    }
-    case 'R': {           /* Read buffers as simple RAM */
+    case 'R':             /* Read buffers as simple RAM */
       if (len > CONFIG_ERROR_BUFFER_SIZE) {
         set_error_ts(ERROR_SYNTAX_VCPU, 1, 0);
         return;
@@ -2136,20 +2161,16 @@ static void parse_zcommands(void) {
       memcpy(ptr, ((uint8_t *)&bufferdata + addr), len);
       buffers[ERRORBUFFER_IDX].lastused = len-1;
       break;
-    }
-    case 'W': {           /* Write buffers as simple RAM */
-      if (original_length < 4) return;
+    case 'W':             /* Write buffers as simple RAM */
       len = original_length - 4;
-      if ((addr + len) > (CONFIG_BUFFER_COUNT * 256)) {
+      if ((original_length <= 4) || ((addr + len) > (CONFIG_BUFFER_COUNT * 256))) {
         set_error_ts(ERROR_SYNTAX_VCPU, 3, 0);
         return;
       }
       ptr = &command_buffer[4];
       memcpy(((uint8_t *)&bufferdata + addr), ptr, len);
-      set_error(ERROR_OK);
       break;
-    }
-    case 'E': {           /* "Execute" buffer with VCPU */
+    case 'E':             /* "Execute" buffer with VCPU */
       if (original_length > 2) {
         len = original_length - 2;
         ptr = &command_buffer[2];
@@ -2158,45 +2179,38 @@ static void parse_zcommands(void) {
       }
       vcpu6502emu();
       break;
-    }
-    case 'C': {           /* Get VCPU status */
+    case 'C':             /* Get VCPU status */
       memcpy(ptr, (uint8_t *)&vcpuregs, sizeof(vcpuregs));
       buffers[ERRORBUFFER_IDX].lastused = sizeof(vcpuregs)-1;
       break;
-    }
 #ifdef CONFIG_VCPULOADERPATCH
-    case 'P': {           /* Set loader patcher parameters */
+    case 'P':             /* Set loader patcher parameters */
       if (original_length == 8) {
         memcpy((uint8_t *)&plparams, (uint8_t *)&command_buffer[2], 6);
       } else set_error_ts(ERROR_SYNTAX_VCPU, 4, 0);
       break;
-    }
 #endif
-    case 'I': {           /* Return informations */
-      *ptr++ = VCPU_VERSION | (VCPU_BUSTYPE << 5);    // This BYTE is NOT 0x33 (ascii number: "3")
+    case 'I':             /* Return informations */
+      *ptr++ = VCPU_VERSION | (VCPU_BUSTYPE_REP << 5);  // This BYTE is NOT 0x33 (ascii number: "3")
       *ptr++ = CONFIG_COMMAND_BUFFER_SIZE;
       *ptr++ = CONFIG_ERROR_BUFFER_SIZE;
       *ptr++ = CONFIG_BUFFER_COUNT;
-      *ptr++ = VCPU_MAXIO_MASK;
+      *ptr++ = VCPU_MAXIO_SIZE-1;
       buffers[ERRORBUFFER_IDX].lastused = 4;
       break;
-    }
 #ifdef VCPUDEBUG_EN
-    case 'Q': {           /* For debug: get buffer_t struct for specified buffer */
+    case 'Q':             /* For debug: get buffer_t struct for specified buffer */
       memcpy(ptr, ((uint8_t *)&buffers + (command_buffer[2] * sizeof(buffer_t))), sizeof(buffer_t));
       buffers[ERRORBUFFER_IDX].lastused = sizeof(buffer_t)-1;
       break;
-    }
-    case 'M': {           /* For debug: send AVR memory */
+    case 'M':             /* For debug: send AVR memory */
       memcpy(ptr, ((uint8_t *)0x0000 + (command_buffer[2] * 64)), 64);
       buffers[ERRORBUFFER_IDX].lastused = 64-1;
       break;
-    }
 #endif
-    default: {
+    default:
       set_error(ERROR_SYNTAX_VCPU);
       break;
-    }
   }
 }
 #endif

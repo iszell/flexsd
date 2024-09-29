@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
    Final Cartridge III, DreamLoad, ELoad fastloader support:
    Copyright (C) 2008-2011  Thomas Giesel <skoe@directbox.com>
    Nippon Loader support:
@@ -263,3 +263,19 @@ void save_dolphin(void) {
 
   /* the file will be closed with ATN+0xe1 by DolphinDOS */
 }
+
+#ifdef PARALLEL_ENABLED
+/* Enable / Disable parallel bus (HS interrupt) */
+void parallel_configure(void) {
+  if ((xbusen_config & 0x0c) == 0x04)
+    xbusenflags |= 0x40;
+  else if ((xbusen_config & 0x0c) == 0x00)
+    xbusenflags &= ~0x40;
+
+  if (xbusenflags & 0x40)
+    parallel_irq_enable();    // Enable HS interrupt
+  else
+    parallel_irq_disable();   // Disable HS interrupt
+  parallel_clear_rxflag();    // Clear receiver ready flag
+}
+#endif

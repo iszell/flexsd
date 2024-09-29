@@ -23,7 +23,6 @@ SIZE = avr-size
 NM = avr-nm
 AVRDUDE = avrdude
 
-
 #---------------- Bootloader, fuses etc. ----------------
 # Set MCU name and length of binary for bootloader
 # WARNING: Fuse settings not tested!
@@ -162,6 +161,10 @@ ARCH_CFLAGS += -fno-split-wide-types
 #ARCH_CFLAGS += -fno-reorder-functions
 #ARCH_CFLAGS += -fno-toplevel-reorder
 endif
+
+# Arch-specific CFLAGS:
+# AVR-GCC 12/13 hack (GCC bug workaround):
+XCFLAGS = --param=min-pagesize=0
 
 #---------------- Add own linker script if needed ----------------
 ifeq ($(CONFIG_VCPUSUPPORT),y)

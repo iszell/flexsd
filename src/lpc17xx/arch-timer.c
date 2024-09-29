@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -24,8 +24,8 @@
 */
 
 #include "config.h"
-#include <arm/NXP/LPC17xx/LPC17xx.h>
-#include <arm/bits.h>
+#include "lpc176x.h"
+#include "bitband.h"
 #include "timer.h"
 
 /* bit definitions */
@@ -38,13 +38,17 @@ void timer_init(void) {
   BITBAND(LPC_SC->PCONP, PCRIT) = 1;
 
   /* clear RIT mask */
-  LPC_RIT->RIMASK = 0; //xffffffff;
+  LPC_RIT->RIMASK = 0;
 
   /* PCLK = CCLK */
   BITBAND(LPC_SC->PCLKSEL1, 26) = 1;
 
   /* enable SysTick */
-  SysTick_Config(SysTick->CALIB & SysTick_CALIB_TENMS_Msk);
+  SysTick->LOAD = (SysTick->CALIB & 0xffffff) - 1;
+  NVIC_SetPriority(SysTick_IRQn, NVIC_PRIORITY_LOWEST);
+  SysTick->VAL = 0;
+  // SysTick->CTRL = SysTick_CTRL_CLKSOURCE | SysTick_CTRL_TICKINT | SysTick_CTRL_ENABLE;
+  timer_enable();
 
   /*** set up IEC timers to count microseconds ***/
 
@@ -52,21 +56,34 @@ void timer_init(void) {
   BITBAND(LPC_SC->PCONP, IEC_TIMER_A_PCONBIT)   = 1;
   BITBAND(LPC_SC->PCONP, IEC_TIMER_B_PCONBIT)   = 1;
   BITBAND(LPC_SC->PCONP, TIMEOUT_TIMER_PCONBIT) = 1;
+#ifdef CONFIG_VCPUSUPPORT
+  BITBAND(LPC_SC->PCONP, VCPU_TIMER_PCONBIT) = 1;
+#endif
 
   /* Use full 100MHz clock */
   BITBAND(LPC_SC->IEC_TIMER_A_PCLKREG, IEC_TIMER_A_PCLKBIT)     = 1;
   BITBAND(LPC_SC->IEC_TIMER_B_PCLKREG, IEC_TIMER_B_PCLKBIT)     = 1;
   BITBAND(LPC_SC->TIMEOUT_TIMER_PCLKREG, TIMEOUT_TIMER_PCLKBIT) = 1;
+#ifdef CONFIG_VCPUSUPPORT
+  BITBAND(LPC_SC->VCPU_TIMER_PCLKREG, VCPU_TIMER_PCLKBIT) = 1;
+#endif
 
   /* keep timers reset */
   BITBAND(IEC_TIMER_A->TCR, 1)   = 1;
   BITBAND(IEC_TIMER_B->TCR, 1)   = 1;
   BITBAND(TIMEOUT_TIMER->TCR, 1) = 1;
+#ifdef CONFIG_VCPUSUPPORT
+  BITBAND(VCPU_TIMER->TCR, 1) = 1;
+#endif
 
   /* prescale 100MHz down to 10 */
   IEC_TIMER_A->PR   = 10-1;
   IEC_TIMER_B->PR   = 10-1;
   TIMEOUT_TIMER->PR = 10-1;
+#ifdef CONFIG_VCPUSUPPORT
+  /* VCPU timer prescaler, 100MHz down to 2MHz (0.5T) */
+  VCPU_TIMER->PR    = (CONFIG_MCU_FREQ / 2000000) - 1;
+#endif
 
   /* enable all capture interrupts for IEC */
   IEC_TIMER_A->CCR = 0b100100;
@@ -76,6 +93,9 @@ void timer_init(void) {
   BITBAND(IEC_TIMER_A->TCR, 1)   = 0;
   BITBAND(IEC_TIMER_B->TCR, 1)   = 0;
   BITBAND(TIMEOUT_TIMER->TCR, 1) = 0;
+#ifdef CONFIG_VCPUSUPPORT
+  BITBAND(VCPU_TIMER->TCR, 1)    = 0;
+#endif
 
   /* stop timeout-timer on match */
   BITBAND(TIMEOUT_TIMER->MCR, 2) = 1; // MR0S - stop timer on match
@@ -84,6 +104,9 @@ void timer_init(void) {
   BITBAND(IEC_TIMER_A->TCR, 0)   = 1;
   BITBAND(IEC_TIMER_B->TCR, 0)   = 1;
   BITBAND(TIMEOUT_TIMER->TCR, 0) = 1;
+#ifdef CONFIG_VCPUSUPPORT
+  BITBAND(VCPU_TIMER->TCR, 0)    = 1;
+#endif
 
   /* enable interrupts for the IEC timers */
   NVIC_EnableIRQ(IEC_TIMER_A_IRQn);
@@ -137,4 +160,13 @@ void start_timeout(unsigned int usecs) {
  */
 unsigned int has_timed_out(void) {
   return !BITBAND(TIMEOUT_TIMER->TCR, 0);
+}
+
+/* 100 Hz SYSTEM_TICK_HANDLER (SysTick interrupt) enable/disable: */
+void timer_enable(void) {
+  SysTick->CTRL = SysTick_CTRL_CLKSOURCE | SysTick_CTRL_TICKINT | SysTick_CTRL_ENABLE;
+}
+
+void timer_disable(void) {
+  SysTick->CTRL = SysTick_CTRL_CLKSOURCE | SysTick_CTRL_TICKINT;
 }

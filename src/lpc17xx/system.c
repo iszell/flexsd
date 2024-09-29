@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -24,9 +24,10 @@
 */
 
 #include "config.h"
-#include <arm/NXP/LPC17xx/LPC17xx.h>
-#include <arm/bits.h>
+#include "lpc176x.h"
+#include "bitband.h"
 #include "system.h"
+#include "llfl-common.h"
 
 
 /* single-copy "rewrite" of LPC_GPIOINT_TypeDef */
@@ -132,6 +133,14 @@ IEC_CLOCK_HANDLER;
 
 /* timer interrupts, used to detect IEC pin changes */
 void IEC_TIMER_A_HANDLER(void) {
+#if CONFIG_FASTSERIAL_MODE >= 1
+  if (IEC_TIMER_SRQ == IEC_TIMER_A) {
+    if (BITBAND(IEC_TIMER_SRQ->IR, 4 + IEC_CAPTURE_SRQ)) {
+      IEC_TIMER_SRQ->IR = 1 << (4 + IEC_CAPTURE_SRQ);
+      iec_srq_handler();
+    }
+  }
+#endif
   if (IEC_TIMER_ATN == IEC_TIMER_A) {
     if (BITBAND(IEC_TIMER_ATN->IR, 4 + IEC_CAPTURE_ATN)) {
       IEC_TIMER_ATN->IR = 1 << (4 + IEC_CAPTURE_ATN);
@@ -150,6 +159,14 @@ void IEC_TIMER_A_HANDLER(void) {
 }
 
 void IEC_TIMER_B_HANDLER(void) {
+#if CONFIG_FASTSERIAL_MODE >= 1
+  if (IEC_TIMER_SRQ == IEC_TIMER_B) {
+    if (BITBAND(IEC_TIMER_SRQ->IR, 4 + IEC_CAPTURE_SRQ)) {
+      IEC_TIMER_SRQ->IR = 1 << (4 + IEC_CAPTURE_SRQ);
+      iec_srq_handler();
+    }
+  }
+#endif
   if (IEC_TIMER_ATN == IEC_TIMER_B) {
     if (BITBAND(IEC_TIMER_ATN->IR, 4 + IEC_CAPTURE_ATN)) {
       IEC_TIMER_ATN->IR = 1 << (4 + IEC_CAPTURE_ATN);

@@ -1,7 +1,7 @@
 # This may not look like it, but it's a -*- makefile -*-
 #
 # sd2iec - SD/MMC to Commodore serial bus interface/controller
-# Copyright (C) 2007-2014  Ingo Korb <ingo@akana.de>
+# Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 #
 #  Inspired by MMC2IEC by Lars Pontoppidan et al.
 #
@@ -202,3 +202,26 @@ CONFIG_DISPLAY_BUFFER_SIZE=40
 # disable SD support
 # (the build system assumes that everything uses SD unless you enable this)
 #CONFIG_NO_SD=y
+
+# VCPU support configuration (AVR + ARM targets):
+# enable VCPU support
+CONFIG_VCPUSUPPORT=y
+# optimalization level: in AVR target, USE LEVEL 3 ONLY! ARM target: USE LEVEL 0!
+CONFIG_VCPUOPTIMLEVEL=3
+# enable drivecode autodetect for VCPU
+CONFIG_VCPULOADERPATCH=y
+
+# Configure Dxx image errorinfo handling
+# 0: Disable errorinfo handling (images with errorinfo is not mountable)
+# 1: Disable errorinfo handling (images with errorinfo is mountable, but no
+#    errors reported)
+# 2: Enable .D64 errorinfo
+# 3: Enable .D64 + .D71 errorinfo
+# 4: Enable .D64 + .D71 + .D81 errorinfo
+CONFIG_DXX_ERRORINFO=3
+
+# Configure fast serial support
+# 0: Disable fast serial support completely
+# 1: Enable fast serial handling for VCPU only
+# 2: Minimal KERNAL support (normal functions + burst load supported)
+CONFIG_FASTSERIAL_MODE=2

@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -26,8 +26,12 @@
 #ifndef ARCH_CONFIG_H
 #define ARCH_CONFIG_H
 
-#include <arm/NXP/LPC17xx/LPC17xx.h>
-#include <arm/bits.h>
+#include "lpc176x.h"
+#include "bitband.h"
+#include "flags.h"
+
+/* AVR compatibility macro */
+#define BV(x) (1<<(x))
 
 /* ----- Common definitions for all LPC17xx hardware variants ------ */
 
@@ -138,6 +142,10 @@ static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
   else
     BITBAND(LPC_GPIO1->FIOCLR, 18) = 1;
 }
+static inline __attribute__((always_inline)) uint8_t get_busy_led(void) {
+  if (BITBAND(LPC_GPIO1->FIOPIN, 18)) return 1;
+  return 0;
+}
 
 static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
   if (state)
@@ -145,12 +153,20 @@ static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
   else
     BITBAND(LPC_GPIO1->FIOCLR, 20) = 1;
 }
+static inline __attribute__((always_inline)) uint8_t get_dirty_led(void) {
+  if (BITBAND(LPC_GPIO1->FIOPIN, 20)) return 1;
+  return 0;
+}
 
 static inline __attribute__((always_inline)) void set_test_led(uint8_t state) {
   if (state)
     BITBAND(LPC_GPIO1->FIOSET, 21) = 1;
   else
     BITBAND(LPC_GPIO1->FIOCLR, 21) = 1;
+}
+static inline __attribute__((always_inline)) uint8_t get_test_led(void) {
+  if (BITBAND(LPC_GPIO1->FIOPIN, 21)) return 1;
+  return 0;
 }
 
 static inline __attribute__((always_inline)) void set_sd_led(uint8_t state) {
@@ -179,6 +195,7 @@ static inline void toggle_dirty_led(void) {
 #  define IEC_CAPTURE_CLOCK     0
 #  define IEC_CAPTURE_DATA      1
 #  define IEC_CAPTURE_SRQ       1
+#  define IEC_MTIMER_CLOCKDATA_SAME
 
 /* IEC output bits - must be EMR of the same timer used for input */
 /* optionally all lines can be on timer 2 (4 match registers) */
@@ -216,6 +233,12 @@ static inline void toggle_dirty_led(void) {
 #  define TIMEOUT_TIMER_PCONBIT 1
 #  define TIMEOUT_TIMER_PCLKREG PCLKSEL0
 #  define TIMEOUT_TIMER_PCLKBIT 2
+
+/* timer for VCPU timing - last remaining timer */
+#  define VCPU_TIMER            LPC_TIM1
+#  define VCPU_TIMER_PCONBIT    2
+#  define VCPU_TIMER_PCLKREG    PCLKSEL0
+#  define VCPU_TIMER_PCLKBIT    4
 
 static inline void iec_pins_connect(void) {
   /* Enable all capture and match pins of timer 2 */
@@ -330,6 +353,10 @@ static inline __attribute__((always_inline)) void set_busy_led(uint8_t state) {
   else
     BITBAND(LPC_GPIO2->FIOSET, 13) = 1;
 }
+static inline __attribute__((always_inline)) uint8_t get_busy_led(void) {
+  if (BITBAND(LPC_GPIO2->FIOPIN, 13)) return 0;
+  return 1;
+}
 
 static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
   /* red */
@@ -338,6 +365,10 @@ static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
   else
     BITBAND(LPC_GPIO0->FIOSET, 27) = 1;
 }
+static inline __attribute__((always_inline)) uint8_t get_dirty_led(void) {
+  if (BITBAND(LPC_GPIO0->FIOPIN, 27)) return 0;
+  return 1;
+}
 
 static inline __attribute__((always_inline)) void set_test_led(uint8_t state) {
   /* onboard red */
@@ -345,6 +376,10 @@ static inline __attribute__((always_inline)) void set_test_led(uint8_t state) {
     BITBAND(LPC_GPIO0->FIOSET, 22) = 1;
   else
     BITBAND(LPC_GPIO0->FIOCLR, 22) = 1;
+}
+static inline __attribute__((always_inline)) uint8_t get_test_led(void) {
+  if (BITBAND(LPC_GPIO0->FIOPIN, 22)) return 1;
+  return 0;
 }
 
 static inline __attribute__((always_inline)) void set_sd_led(uint8_t state) {
@@ -374,6 +409,7 @@ static inline void toggle_dirty_led(void) {
 #  define IEC_CAPTURE_CLOCK     0
 #  define IEC_CAPTURE_DATA      1
 #  define IEC_CAPTURE_SRQ       1
+#  define IEC_MTIMER_CLOCKDATA_SAME
 
 /* IEC output bits - must be EMR of the same timer used for input */
 /* optionally all lines can be on timer 2 (4 match registers) */
@@ -422,6 +458,12 @@ static inline void toggle_dirty_led(void) {
 #  define TIMEOUT_TIMER_PCLKREG PCLKSEL1
 #  define TIMEOUT_TIMER_PCLKBIT 12
 
+/* timer for VCPU timing - last remaining timer */
+#  define VCPU_TIMER            LPC_TIM3
+#  define VCPU_TIMER_PCONBIT    23
+#  define VCPU_TIMER_PCLKREG    PCLKSEL1
+#  define VCPU_TIMER_PCLKBIT    14
+
 static inline void iec_pins_connect(void) {
   /* Enable all capture and match pins of timers 0+1 */
   LPC_PINCON->PINSEL3 |= 0b1111111111000011000011110000;
@@ -461,6 +503,7 @@ static inline __attribute__((always_inline)) void uart_pins_connect(void) {
   /* same port as the boot loader */
   LPC_PINCON->PINSEL0 |= BV(4) | BV(6);
 }
+
 
 #else
 #  error "CONFIG_HARDWARE_VARIANT is unset or set to an unknown value."
@@ -530,12 +573,20 @@ static inline __attribute__((always_inline)) void set_atn(unsigned int state) {
   else
     BITBAND(IEC_MTIMER_ATN->EMR, IEC_OPIN_ATN) = 0;
 }
+static inline __attribute__((always_inline)) uint32_t get_atndrive(void) {
+  if (BITBAND(IEC_MTIMER_ATN->EMR, IEC_OPIN_ATN)) return COND_INV(1);
+  return COND_INV(0);
+}
 
 static inline __attribute__((always_inline)) void set_clock(unsigned int state) {
   if (COND_INV(state))
     BITBAND(IEC_MTIMER_CLOCK->EMR, IEC_OPIN_CLOCK) = 1;
   else
     BITBAND(IEC_MTIMER_CLOCK->EMR, IEC_OPIN_CLOCK) = 0;
+}
+static inline __attribute__((always_inline)) uint32_t get_clockdrive(void) {
+  if (BITBAND(IEC_MTIMER_CLOCK->EMR, IEC_OPIN_CLOCK)) return COND_INV(1);
+  return COND_INV(0);
 }
 
 static inline __attribute__((always_inline)) void set_data(unsigned int state) {
@@ -544,12 +595,35 @@ static inline __attribute__((always_inline)) void set_data(unsigned int state) {
   else
     BITBAND(IEC_MTIMER_DATA->EMR, IEC_OPIN_DATA) = 0;
 }
+static inline __attribute__((always_inline)) uint32_t get_datadrive(void) {
+  if (BITBAND(IEC_MTIMER_DATA->EMR, IEC_OPIN_DATA)) return COND_INV(1);
+  return COND_INV(0);
+}
+
+static inline __attribute__((always_inline)) void set_clockdata(unsigned int cstate, unsigned int dstate) {
+#ifdef IEC_MTIMER_CLOCKDATA_SAME
+  uint32_t r = IEC_MTIMER_DATA->EMR & ~((1<<IEC_OPIN_CLOCK)|(1<<IEC_OPIN_DATA));
+  if (COND_INV(cstate))
+    r |= (1<<IEC_OPIN_CLOCK);
+  if (COND_INV(dstate))
+    r |= (1<<IEC_OPIN_DATA);
+  IEC_MTIMER_DATA->EMR = r;
+#else
+  (void)cstate;
+  (void)dstate;
+  #error "CLOCK/DATA not in same timer, please reimplement set_clockdata()!"
+#endif
+}
 
 static inline __attribute__((always_inline)) void set_srq(unsigned int state) {
   if (COND_INV(state))
     BITBAND(IEC_MTIMER_SRQ->EMR, IEC_OPIN_SRQ) = 1;
   else
     BITBAND(IEC_MTIMER_SRQ->EMR, IEC_OPIN_SRQ) = 0;
+}
+static inline __attribute__((always_inline)) uint32_t get_srqdrive(void) {
+  if (BITBAND(IEC_MTIMER_SRQ->EMR, IEC_OPIN_SRQ)) return COND_INV(1);
+  return COND_INV(0);
 }
 
 /* Enable/disable ATN interrupt */
@@ -571,21 +645,72 @@ static inline __attribute__((always_inline)) void set_clock_irq(uint8_t state) {
 }
 #define HAVE_CLOCK_IRQ
 
+/* Enable/disable SRQ interrupt */
+static inline __attribute__((always_inline)) void set_srq_irq(uint8_t state) {
+  if (state) {
+#ifdef IEC_INPUTS_INVERTED
+    IEC_TIMER_SRQ->CCR |=   0b110 << (3 * IEC_CAPTURE_SRQ);     // If inputs inverted, falling edge
+#else
+    IEC_TIMER_SRQ->CCR |=   0b101 << (3 * IEC_CAPTURE_SRQ);     // If inputs noninverted, rising edge
+#endif
+  } else {
+    IEC_TIMER_SRQ->CCR &= ~(0b111 << (3 * IEC_CAPTURE_SRQ));
+  }
+}
+
 #undef COND_INV
 
 #ifdef HAVE_PARALLEL
+static inline uint8_t parallel_data_read(void) {
+  return (PARALLEL_PGPIO->FIOPIN >> PARALLEL_PSTARTBIT) & 0xff;
+}
+
+static inline void parallel_data_write(uint8_t value) {
+  PARALLEL_PGPIO->FIOPIN =
+    (PARALLEL_PGPIO->FIOPIN & ~(0xff << PARALLEL_PSTARTBIT)) |
+    (value << PARALLEL_PSTARTBIT);
+}
+
+static inline void parallel_hskline_outset(uint8_t level) {
+  if (level) {
+    PARALLEL_HGPIO->FIOSET = BV(PARALLEL_HSK_OUT_BIT);
+  } else {
+    PARALLEL_HGPIO->FIOCLR = BV(PARALLEL_HSK_OUT_BIT);
+  }
+}
+
+static inline uint32_t parallel_hskline_outget(void) {
+  return PARALLEL_HGPIO->FIOPIN & BV(PARALLEL_HSK_OUT_BIT);
+}
+
+static inline uint32_t parallel_hskline_get(void) {
+  return PARALLEL_HGPIO->FIOPIN & BV(PARALLEL_HSK_IN_BIT);
+}
+
+static inline void parallel_irq_enable(void) {
+# ifdef PARALLEL_HSK_ON_GPIO2
+  LPC_GPIOINT->IO2IntEnF |= BV(PARALLEL_HSK_IN_BIT);
+# else
+  LPC_GPIOINT->IO0IntEnF |= BV(PARALLEL_HSK_IN_BIT);
+# endif
+}
+
+static inline void parallel_irq_disable(void) {
+# ifdef PARALLEL_HSK_ON_GPIO2
+  LPC_GPIOINT->IO2IntEnF &= ~(BV(PARALLEL_HSK_IN_BIT));
+# else
+  LPC_GPIOINT->IO0IntEnF &= ~(BV(PARALLEL_HSK_IN_BIT));
+# endif
+}
+
 static inline void parallel_init(void) {
   /* set HSK_OUT to output, open drain, weak-high (pullup is default-on) */
   PARALLEL_HGPIO->FIOPIN |= BV(PARALLEL_HSK_OUT_BIT);
   PARALLEL_HGPIO->FIODIR |= BV(PARALLEL_HSK_OUT_BIT);
   LPC_PINCON->PARALLEL_HOD |= BV(PARALLEL_HSK_OUT_BIT);
   LPC_PINCON->PARALLEL_POD |= 0xff << PARALLEL_PSTARTBIT;
-
-# ifdef PARALLEL_HSK_ON_GPIO2
-  LPC_GPIOINT->IO2IntEnF |= BV(PARALLEL_HSK_IN_BIT);
-# else
-  LPC_GPIOINT->IO0IntEnF |= BV(PARALLEL_HSK_IN_BIT);
-# endif
+  //parallel_irq_enable();
+  parallel_irq_disable();
 }
 #else
 static inline void parallel_init(void) {}
@@ -600,5 +725,16 @@ static inline void display_intrq_init(void) {
 static inline unsigned int display_intrq_active(void) {
   return 0;
 }
+
+/* VCPU indicator led. If not previously defined, test led is used. */
+#ifdef CONFIG_VCPUSUPPORT
+  #ifndef set_vcpu_led
+    #ifdef CONFIG_VCPULED
+      #define set_vcpu_led set_test_led
+    #else
+      #define set_vcpu_led(x) do {} while(0)
+    #endif
+  #endif
+#endif
 
 #endif

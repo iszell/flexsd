@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -24,33 +24,39 @@
 */
 
 #include "config.h"
-#include <arm/NXP/LPC17xx/LPC17xx.h>
-#include <arm/bits.h>
+
+#ifdef PARALLEL_ENABLED
+
+#include "bitband.h"
 #include "iec-bus.h"
 #include "timer.h"
 #include "fastloader-ll.h"
 
 
 uint8_t parallel_read(void) {
-  return (PARALLEL_PGPIO->FIOPIN >> PARALLEL_PSTARTBIT) & 0xff;
+  return parallel_data_read();
 }
 
 void parallel_write(uint8_t value) {
-  PARALLEL_PGPIO->FIOPIN =
-    (PARALLEL_PGPIO->FIOPIN & ~(0xff << PARALLEL_PSTARTBIT)) |
-    (value << PARALLEL_PSTARTBIT);
+  parallel_data_write(value);
   delay_us(1);
 }
 
 void parallel_set_dir(parallel_dir_t direction) {
   if (direction == PARALLEL_DIR_IN) {
     /* set all lines high - FIODIR is not used in open drain mode */
-    PARALLEL_PGPIO->FIOSET |= 0xff << PARALLEL_PSTARTBIT;
+    parallel_data_write(0xff);
   }
 }
 
 void parallel_send_handshake(void) {
-  PARALLEL_HGPIO->FIOCLR = BV(PARALLEL_HSK_OUT_BIT);
+  parallel_hskline_outset(0);
   delay_us(2);
-  PARALLEL_HGPIO->FIOSET = BV(PARALLEL_HSK_OUT_BIT);
+  parallel_hskline_outset(1);
 }
+
+void parallel_sethiz_handshake(void) {
+  parallel_hskline_outset(1);
+}
+
+#endif

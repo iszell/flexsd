@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -40,6 +40,9 @@ typedef struct {
 
 extern uint32_t llfl_reference_time;
 
+extern volatile uint8_t fastserrecven_flag;
+extern volatile uint8_t fastserrecvrdy_flag;
+
 void llfl_setup(void);
 void llfl_teardown(void);
 void llfl_wait_atn(unsigned int state);
@@ -52,5 +55,7 @@ uint32_t llfl_read_bus_at(uint32_t time);
 uint32_t llfl_now(void);
 void llfl_generic_load_2bit(const generic_2bit_t *def, uint8_t byte);
 uint8_t llfl_generic_save_2bit(const generic_2bit_t *def);
+
+void iec_srq_handler(void);
 
 #endif

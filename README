@@ -3,12 +3,47 @@ FlexSD - Flexible SD Drive firmware for SD2IEC drives
 This program is the sd2iec fork. You can find the original version here:
 [https://www.sd2iec.de](https://www.sd2iec.de)
 
-This firmware can be used with AVR-based drives at this moment. The
+This firmware can be used with AVR-based and ARM-based drives. The
 original functions are extended with the possibility of program
 execution. The programs are executed using a virtual CPU (VCPU).
 The documentation for the VCPU is available in a separate file, the
 other functions are identical to the originals. The original sd2iec
-description is readed below.
+description (with some additions) can be found below.
+
+-----
+
+The current version partially supports the C128 fast serial protocol.
+Currently, the functions necessary for basic operation are implemented,
+thanks for any feedback!
+
+By default, fast serial mode is not enabled for compatibility reasons.
+It should only be switched on for c128 machines! (See the "U0" command
+later in this documentation for details.)
+
+The easiest way to enable it, enter machine language MONITOR (press
+SHIFT+F7 (F8) keys) and type following (without quotes):
+
+  "@8,U0>B2"
+
+This command puts the drive in "automatic" fast serial mode. (In addition,
+a fixed "on" or "off" state can be set. More details can be found later
+in this documentation.) This state is only valid until the first drive
+RESET! If you want to keep this setting permanently, then type the
+following (without quotes):
+
+  "@8,XW"
+
+(In the commands above, "8" is the device address in hexadecimal, change
+it to the desired value! For device 10, write "A" and so on.) Automatic
+mode is usually appropriate if several types of computers (C128 +
+VIC20 / C64 / C264...) are using the same drive.
+
+Note: KERNAL mode fast serial communication is only supported by drives
+with larger (128K) FLASH memory! (See the "feature matrix" table.)
+
+Some hardware also supports the DolphinDOS parallel interface. Parallel
+interface use can now be enabled/disabled with the appropriate command
+(see XP+/XP- commands below), but is disabled by default!
 
 -----
 
@@ -286,8 +321,24 @@ Supported commands:
      8601-compliant representation.
 
 - U0
-  Device address changing with "U0>"+chr$(new address) is supported,
-  other U0 commands are currently not implemented.
+  This is used to access the 'burst' command set for 157x/1581 drives.
+  Device address changing with "U0>"+chr$(new address) is supported by
+  all SD2IEC devices (CHGUTL), the existence of the other commands
+  depends on fast serial support. If device support it, enable/disable
+  "U0>Bx" or "U0>Mx" commands:
+    "U0>B0" or "U0>M0" <- Disable fast serial mode
+    "U0>B1" or "U0>M1" <- Enable fast serial mode
+    "U0>B2" or "U0>M2" <- Fast serial mode is automatic (default: disable,
+      but if the C128 KERNAL read the "boot block", enable it).
+  By default, fast serial protocol is disabled for compatibility reasons.
+  Automatic mode is useful when the SD2IEC drive is not used with C128
+  only. (To keep the setting, the configuration must be saved, see XW
+  command below.)
+  Apart from the 'CHGUTL' command above, only the 'FSTLOAD' command is
+  currently implemented, which is necessary for basic KERNAL operation.
+  Note: not all devices have firmware that supports the fast serial
+  protocol, and on some devices the hardware is not ready for it. To
+  check the hardware, the corresponding VCPU tests are recommended!
 
 - U1/U2/B-R/B-W
   Block reading and writing is fully supported while a D64 image is mounted.
@@ -425,6 +476,10 @@ Supported commands:
              and the suffix of the configuration file (usually corresponds
              to the short name of the hardware sd2iec was compiled for).
 
+  - XP+/XP-  Enable/disable parallel Dolphin on devices that support it
+             (default: disabled). (To keep the setting, the configuration
+             must be saved, see XW command above.)
+
 - M-R, M-W, M-E
   When no file is set up using XR, M-R will check a small internal
   table of common drive-detection addresses and return data that
@@ -462,7 +517,7 @@ Supported commands:
   corresponds to any of the known software fastloaders so the correct
   emulation code can be used when M-E is called.
 
-- Z: VCPU commands. For usage, see VCPU documentation.
+- ZI/ZB/ZR/ZW/ZE/ZC: VCPU commands. For usage, see VCPU documentation.
 
 Large buffers:
 ==============
@@ -710,8 +765,10 @@ Turbodisk, but still not as relaxed as the standard Commodore IEC protocol.
 Virtual CPU (VCPU):
 ===================
 This extension can be used to run any program in the SD2IEC, as possible on
-the original CBM drives. This extension is ready only SD2IEC device with
-8 MHz AVR + CBM serial port. Other devices not supported yet.
+the original CBM drives. This extension is ready for SD2IEC devices with
+8 MHz AVR with CBM serial port. Other speed of AVR devices not supported
+(yet). ARM based devices (ARM2IEC) with CBM serial port is already
+supported.
 
 x00 files:
 ==========
@@ -728,11 +785,15 @@ x00 files are recognized by checking both the extension of the file
 Disk Images:
 ============
 Disk images are recognized by their file extension (.D64, .D41, .D71, .D81,
-.DNP) and their file size (must be one of 174848, 175531, 349696, 351062,
-819200 or a multiple of 65536 for DNP). If the image has an error info block
-appended it will be used to simulate read errors. Writing to a sector with
-an error will always work, but it will not clear the indicated error.
-D81 images with error info blocks are not supported.
+.DNP) and their file size (must be one of 174848, 175531, 196608, 197376,
+349696, 351062, 819200, 822400 or a multiple of 65536 for DNP). The 40
+track .D64 images handling is problematic because there are several formats
+and they cannot be identified. All versions are readable, but currently
+writing assumes a DolphinDos format. (The 40-track image handle is
+primarily designed to the direct track/sector access.) If the image has an
+error info block appended it will be used to simulate read errors. Writing
+to a sector with an error will always work, but it will not clear the
+indicated error. DNP images with error info blocks are not supported.
 
 Warning: There is at least one program out there (DirMaster v2.1/Style by
 THE WIZ) which generates broken DNP files. The usual symptom is that

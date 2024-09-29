@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -30,6 +30,7 @@
 #include <avr/interrupt.h>
 /* Include avrcompat.h to get the PA0..PD7 macros on 1284P */
 #include "avrcompat.h"
+#include "flags.h"
 
 /* ----- Common definitions for all AVR hardware variants ------ */
 
@@ -37,7 +38,7 @@
 typedef uint8_t rawbutton_t;
 
 /* Interrupt handler for system tick */
-#define SYSTEM_TICK_HANDLER ISR(TIMER1_COMPA_vect)
+#define SYSTEM_TICK_HANDLER ISR(TIMER1_COMPA_vect, ISR_NOBLOCK)
 
 /* EEPROMFS: offset and size must be multiples of 4 */
 /* to actually enable it, CONFIG_HAVE_EEPROMFS must be set in config */
@@ -198,9 +199,17 @@ static inline __attribute__((always_inline)) void sdcard2_set_ss(uint8_t state) 
 
 /* ATN interrupt (required) */
 #  define IEC_ATN_INT_VECT    PCINT0_vect
+#  define IEC_PCIFR_BIT         PCIF0
+
+/* Fast serial support:
+   If SRQ interrupt is PCI and the vector shared with ATN vector, define this: */
+#  define IEC_SRQATN_VECT_SHARED
+/* SRQ interrupt vector, if not shared with ATN vector: */
+//#  define IEC_SRQ_INT_VECT      PCINTx_vect
+
 static inline void iec_interrupts_init(void) {
   PCMSK0 = _BV(PCINT0);
-  PCIFR |= _BV(PCIF0);
+  PCIFR |= _BV(IEC_PCIFR_BIT);
 }
 
 /* CLK interrupt (not required) */
@@ -237,7 +246,7 @@ static inline void iec_interrupts_init(void) {
 
 
 /*** board-specific initialisation ***/
-/* Currently used on uIEC/CF and uIEC/SD only */
+/* Used on uIEC/CF, uIEC/SD, FlexSD drive */
 //#define HAVE_BOARD_INIT
 //static inline void board_init(void) {
 //  // turn on power LED
@@ -251,12 +260,15 @@ static inline void iec_interrupts_init(void) {
 /*   for SBI/CBI/SBIS/SBIC usage */
 /*   If set this definition to any unused port pin and connect LED to this, */
 /*   this LED switch On/Off for VCPU usage */
-#  define VCPURUNFLAG_REG DDRB
-#  define VCPURUNFLAG_BIT PB0
+/* If not defined these, one bit of "globalflags" will be used for this. */
+#  ifdef CONFIG_VCPULED
+#    define VCPURUNFLAG_REG DDRB
+#    define VCPURUNFLAG_BIT PB0
 /* If VCPU "run flag" is assigned to any port pin, set PORT name, */
 /*   the LED init routine set the correct level of this pin */
 /* If "run flag" is *NOT* use port pin, comment out this definition */
-#  define VCPURUNFLAG_PORT PORTB
+#    define VCPURUNFLAG_PORT PORTB
+#  endif
 
 
 
@@ -313,10 +325,12 @@ static inline uint8_t sdcard_wp(void) {
 #  define IEC_PIN_SRQ           PA3
 #  define IEC_ATN_INT_VECT      PCINT0_vect
 #  define IEC_PCMSK             PCMSK0
+#  define IEC_PCIFR_BIT         PCIF0
+#  define IEC_SRQATN_VECT_SHARED
 
 static inline void iec_interrupts_init(void) {
   PCICR |= _BV(PCIE0);
-  PCIFR |= _BV(PCIF0);
+  PCIFR |= _BV(IEC_PCIFR_BIT);
 }
 
 #  define BUTTONS_PORT PORTC
@@ -325,9 +339,11 @@ static inline void iec_interrupts_init(void) {
 #  define BUTTONS_NEXT_PIN PC4
 #  define BUTTONS_PREV_PIN PC3
 
-#  define VCPURUNFLAG_REG DDRB
-#  define VCPURUNFLAG_BIT PB0
-#  define VCPURUNFLAG_PORT PORTB
+#  ifdef CONFIG_VCPULED
+#    define VCPURUNFLAG_REG DDRB
+#    define VCPURUNFLAG_BIT PB0
+#    define VCPURUNFLAG_PORT PORTB
+#  endif
 
 
 #elif CONFIG_HARDWARE_VARIANT == 3
@@ -380,10 +396,12 @@ static inline uint8_t sdcard_wp(void) {
 #  define IEC_PIN_SRQ           PC3
 #  define IEC_ATN_INT_VECT      PCINT2_vect
 #  define IEC_PCMSK             PCMSK2
+#  define IEC_PCIFR_BIT         PCIF2
+#  define IEC_SRQATN_VECT_SHARED
 
 static inline void iec_interrupts_init(void) {
   PCICR |= _BV(PCIE2);
-  PCIFR |= _BV(PCIF2);
+  PCIFR |= _BV(IEC_PCIFR_BIT);
 }
 
 #  define BUTTONS_PORT PORTA
@@ -400,14 +418,17 @@ static inline void iec_interrupts_init(void) {
 #  define SOFTI2C_BIT_INTRQ     PC7
 #  define SOFTI2C_DELAY         6
 
-#  define VCPURUNFLAG_REG DDRB
-#  define VCPURUNFLAG_BIT PB0
-#  define VCPURUNFLAG_PORT PORTB
+#  ifdef CONFIG_VCPULED
+#    define VCPURUNFLAG_REG DDRB
+#    define VCPURUNFLAG_BIT PB0
+#    define VCPURUNFLAG_PORT PORTB
+#  endif
 
 
 #elif CONFIG_HARDWARE_VARIANT == 4
 /* ---------- Hardware configuration: uIEC ---------- */
 /* Note: This CONFIG_HARDWARE_VARIANT number is tested in system.c */
+/*       240329: CONFIG_HARDWARE_VARIANT only found in xxx/arch-config.h */
 #  define HAVE_ATA
 #  ifndef CONFIG_NO_SD
 #    define HAVE_SD
@@ -472,6 +493,11 @@ static inline uint8_t sdcard_wp(void) {
 #  define IEC_ATN_INT_VECT      INT6_vect
 #  define IEC_CLK_INT           INT5
 #  define IEC_CLK_INT_VECT      INT5_vect
+/* On uIEC hardware, the SRQ line connected to PE2, but no interrupt
+ * can be attached on this pin. (Maybe the analog comparator can do
+ * any trick..? It's a joke.)
+ * Therefore, no IEC_SRQ_INT_VECT defined. */
+//#  define IEC_SRQ_INT_VECT      PCINTx_vect
 
 static inline void iec_interrupts_init(void) {
   EICRB |= _BV(ISC60);
@@ -506,6 +532,28 @@ static inline void iec_interrupts_init(void) {
 #    define PARALLEL_HSK_IN_BIT   4         // CONN2 pin 16, to C64 PC2
 #    define PARALLEL_PCMSK        PCMSK0
 #    define PARALLEL_PCINT_GROUP  0
+
+#    define PARALLEL_IRQEN_BIT      PARALLEL_PCINT_GROUP
+#    define PARALLEL_IRQEN_REG      PCICR
+#    define PARALLEL_IRQFLAG_REG    PCIFR
+
+/* Configure parallel port lines and interrupt */
+static inline void parallelport_init(void) {
+  /* set data lines to input with pullup */
+  PARALLEL_PDDR  = 0;
+  PARALLEL_PPORT = 0xff;
+
+  /* set HSK_OUT and _IN to input with pullup */
+  PARALLEL_HDDR  &= ~(_BV(PARALLEL_HSK_OUT_BIT) |
+                      _BV(PARALLEL_HSK_IN_BIT));
+  PARALLEL_HPORT |= _BV(PARALLEL_HSK_OUT_BIT) |
+                    _BV(PARALLEL_HSK_IN_BIT);
+
+  /* configure interrupt for parallel handshake */
+  /* excluse PCINT group */
+  PARALLEL_PCMSK |= _BV(PARALLEL_HSK_IN_BIT);
+}
+
 #  elif defined(CONFIG_PARALLEL_DOLPHIN)
 #    error CONFIG_PARALLEL_DOLPHIN on uIEC requires CONFIG_NO_SD=y !
 #  endif
@@ -521,8 +569,10 @@ static inline void board_init(void) {
   PORTG = _BV(PG0) | _BV(PG1) | _BV(PG2);
 }
 
-#  define VCPURUNFLAG_REG PORTA
-#  define VCPURUNFLAG_BIT PA0
+#  ifdef CONFIG_VCPULED
+#    define VCPURUNFLAG_REG PORTA
+#    define VCPURUNFLAG_BIT PA0
+#  endif
 
 
 #elif CONFIG_HARDWARE_VARIANT == 5
@@ -607,10 +657,12 @@ static inline __attribute__((always_inline)) void sdcard2_set_ss(uint8_t state) 
 #  define IEC_OPIN_SRQ          PA7
 #  define IEC_ATN_INT_VECT      PCINT0_vect
 #  define IEC_PCMSK             PCMSK0
+#  define IEC_PCIFR_BIT         PCIF0
+#  define IEC_SRQATN_VECT_SHARED
 
 static inline void iec_interrupts_init(void) {
   PCICR |= _BV(PCIE0);
-  PCIFR |= _BV(PCIF0);
+  PCIFR |= _BV(IEC_PCIFR_BIT);
 }
 
 #  define BUTTONS_PORT PORTC
@@ -627,9 +679,11 @@ static inline void iec_interrupts_init(void) {
 #  define SOFTI2C_BIT_INTRQ     PC6
 #  define SOFTI2C_DELAY         6
 
-#  define VCPURUNFLAG_REG DDRB
-#  define VCPURUNFLAG_BIT PB0
-#  define VCPURUNFLAG_PORT PORTB
+#  ifdef CONFIG_VCPULED
+#    define VCPURUNFLAG_REG DDRB
+#    define VCPURUNFLAG_BIT PB0
+#    define VCPURUNFLAG_PORT PORTB
+#  endif
 
 
 /* Hardware configuration 6 was old NKC MMC2IEC */
@@ -664,7 +718,7 @@ static inline uint8_t sdcard_wp(void) {
   return PINE & _BV(PE2);
 }
 
-/* No device jumpers on uIEC */
+/* No device jumpers on uIEC v3 */
 #  define DEVICE_DEFAULT_UNITNO 10
 
 #  define LED_BUSY_PORT PORTG
@@ -689,10 +743,12 @@ static inline uint8_t sdcard_wp(void) {
 #  define IEC_OPIN_SRQ          PD7
 #  define IEC_ATN_INT_VECT      PCINT0_vect
 #  define IEC_PCMSK             PCMSK0
+#  define IEC_PCIFR_BIT         PCIF0
+#  define IEC_SRQATN_VECT_SHARED
 
 static inline void iec_interrupts_init(void) {
   PCICR |= _BV(PCIE0);
-  PCIFR |= _BV(PCIF0);
+  PCIFR |= _BV(IEC_PCIFR_BIT);
 }
 
 #  define BUTTONS_PORT PORTG
@@ -709,8 +765,10 @@ static inline void board_init(void) {
   PORTG |= _BV(PG1);
 }
 
-#  define VCPURUNFLAG_REG PORTA
-#  define VCPURUNFLAG_BIT PA0
+#  ifdef CONFIG_VCPULED
+#    define VCPURUNFLAG_REG PORTA
+#    define VCPURUNFLAG_BIT PA0
+#  endif
 
 
 #elif CONFIG_HARDWARE_VARIANT == 8
@@ -896,10 +954,12 @@ static inline uint8_t sdcard_wp(void) {
 #  define IEC_PIN_SRQ           PD5
 #  define IEC_ATN_INT_VECT      PCINT3_vect
 #  define IEC_PCMSK             PCMSK3
+#  define IEC_PCIFR_BIT         PCIF3
+#  define IEC_SRQATN_VECT_SHARED
 
 static inline void iec_interrupts_init(void) {
   PCICR |= _BV(PCIE3);
-  PCIFR |= _BV(PCIF3);
+  PCIFR |= _BV(IEC_PCIFR_BIT);
 }
 #endif // CONFIG_HAVE_IEC
 
@@ -966,6 +1026,177 @@ static inline void ieee_interface_init(void) {
 #  define BUTTONS_NEXT_PIN PB1
 #  define BUTTONS_PREV_PIN PB2
 
+
+#elif CONFIG_HARDWARE_VARIANT == 20
+/* ---------- Hardware configuration: FlexSD Drive version 1 ---------- */
+#  define HAVE_SD
+#  define SD_CHANGE_HANDLER     ISR(INT2_vect)
+#  define SD_SUPPLY_VOLTAGE     (1L<<21)
+
+/* 250kHz slow, 2MHz fast */
+#  define SPI_DIVISOR_SLOW 32
+#  define SPI_DIVISOR_FAST 4
+
+static inline void sdcard_interface_init(void) {
+  // WP + CARD detect lines inicialized in board_init()
+  EICRA |=  _BV(ISC20);
+  EIMSK |=  _BV(INT2);
+}
+
+static inline uint8_t sdcard_detect(void) {
+  return !(PINB & _BV(PB2));
+}
+
+static inline uint8_t sdcard_wp(void) {
+  return PINB & _BV(PB3);
+}
+
+#  define DEVICE_HW_ADDR_MUX_PIN PINC
+#  define DEVICE_HW_ADDR_PIN OCR0A      // For an explanation of this funny register choice, see board_init()
+#  define DEVICE_HW_ADDR_B0 6
+#  define DEVICE_HW_ADDR_B1 5
+#  define DEVICE_HW_CONF_B2 4
+#  define DEVICE_HW_CONF_B3 3
+
+/* On the FlexSD hardware, the LEDs have the same port pins as the
+   push buttons. To avoid collisions, the LEDs are driven in a
+   simulated open-collector. Therefore, the LED ports use the data
+   direction register, and the active level is '1', even though the
+   LEDs are lit with output = low level. */
+#  define LED_BUSY_PORT DDRB
+#  define LED_BUSY_PIN PB0
+#  define LED_DIRTY_PORT DDRB
+#  define LED_DIRTY_PIN PB1
+#  define LED_ACTIVE_LEVEL 1
+#  define LED_VCPU_PORT PORTD
+#  define LED_VCPU_PIN PD1
+
+#  define IEC_INPUT             PIND
+#  define IEC_DDRIN             DDRD
+#  define IEC_PORTIN            PORTD
+#  define IEC_PIN_ATN           PD4
+#  define IEC_PIN_DATA          PD6
+#  define IEC_PIN_CLOCK         PD5
+#  define IEC_PIN_SRQ           PD3
+#  define IEC_SEPARATE_OUT
+#  define IEC_PORT              PORTC
+#  define IEC_DDROUT            DDRC
+#  define IEC_OPIN_ATN          PC4
+#  define IEC_OPIN_DATA         PC6
+#  define IEC_OPIN_CLOCK        PC5
+#  define IEC_OPIN_SRQ          PC3
+#  define IEC_ATN_INT_VECT      PCINT3_vect
+#  define IEC_PCMSK             PCMSK3
+#  define IEC_PCIFR_BIT         PCIF3
+#  define IEC_SRQATN_VECT_SHARED
+
+#  define IEC_INPUTS_INVERTED
+
+static inline void iec_interrupts_init(void) {
+  PCICR |= _BV(PCIE3);
+  PCIFR |= _BV(IEC_PCIFR_BIT);
+}
+
+/* Parallel cable: */
+#  define HAVE_PARALLEL
+#  define PARALLEL_HANDLER      ISR(INT0_vect)
+#  define PARALLEL_PDDR         DDRA      // CONN2 pins 1,3,...,15
+#  define PARALLEL_PPORT        PORTA
+#  define PARALLEL_PPIN         PINA
+#  define PARALLEL_HDDR         DDRD
+#  define PARALLEL_HPORT        PORTD
+#  define PARALLEL_HPIN         PIND
+#  define PARALLEL_HSK_OUT_BIT  7         // CONN2 pin 14, to C64 FLAG2
+#  define PARALLEL_HSK_IN_BIT   2         // CONN2 pin 16, to C64 PC2
+#  define PARALLEL_INTMODE      _BV(ISC01)  // Falling Edge
+#  define PARALLEL_INTSEL       INT0
+
+#  define PARALLEL_IRQEN_BIT    PARALLEL_INTSEL
+#  define PARALLEL_IRQEN_REG    EIMSK
+#  define PARALLEL_IRQFLAG_REG  EIFR
+
+/* Configure parallel port lines and interrupt */
+static inline void parallelport_init(void) {
+  /* Parallel lines configured by board_init(),
+     this init configure irq only */
+
+  /* configure interrupt for parallel handshake */
+  /* exclusive INTx line */
+  EICRA |= PARALLEL_INTMODE;
+}
+
+/* I2C + display lines: */
+#  define SOFTI2C_PORT          PORTC
+#  define SOFTI2C_PIN           PINC
+#  define SOFTI2C_DDR           DDRC
+#  define SOFTI2C_BIT_SCL       PC0
+#  define SOFTI2C_BIT_SDA       PC1
+#  define SOFTI2C_BIT_INTRQ     PC2
+#  define SOFTI2C_DELAY         6
+
+#  define HAVE_BOARD_INIT
+#  define IEC_IFINIT_IN_BRDINIT
+static inline void board_init(void) {
+  /* Read config switches in early stage, inputs are multiplexed
+     with IEC output pins. The state of the bits is stored in an
+     unused peripheral register. If the state of the switches has
+     already been read by the bootloader, it is saved in the same
+     register. The reason it is not saved to SRAM is because it
+     is deleted by crt on startup, but the peripheral register
+     remains unchanged. */
+  if (!(IEC_DDROUT & (_BV(IEC_OPIN_ATN) | _BV(IEC_OPIN_CLOCK) | _BV(IEC_OPIN_DATA) | _BV(IEC_OPIN_SRQ)))) {
+    IEC_PORT |= (_BV(IEC_OPIN_ATN) | _BV(IEC_OPIN_CLOCK) | _BV(IEC_OPIN_DATA) | _BV(IEC_OPIN_SRQ));
+    DEVICE_HW_ADDR_PIN = DEVICE_HW_ADDR_MUX_PIN;
+    IEC_PORT &= ~(_BV(IEC_OPIN_ATN) | _BV(IEC_OPIN_CLOCK) | _BV(IEC_OPIN_DATA) | _BV(IEC_OPIN_SRQ));
+  }
+  /* I/O directions set */
+  DDRA = 0x00;      // parallel IN
+  PORTA = 0xff;     // parallel pullups on
+  DDRB &= 0xf0;
+  PORTB = (PORTB & 0xf0) | 0x0c;  // Config portB B3210, B7654: SPI bus, init separately
+  PORTC = 0xc7;     // CBMSER DAT lines drive to low, host wait...
+  DDRC = 0xfb;
+  PORTD = 0xff;
+  DDRD = 0x02;
+  /* The FlexSD drive hardware runs at 16 MHz clock speed,
+   wich requires divide by 2 now */
+  CLKPR = _BV(CLKPCE);
+  CLKPR = _BV(CLKPS0);
+}
+
+#  define BUTTONS_MUX_DDR DDRB
+#  define BUTTONS_MUX_PORT PORTB
+#  define BUTTONS_INPUT PINB
+#  define BUTTONS_NEXT_PIN PB0
+#  define BUTTONS_PREV_PIN PB1
+
+/* Since the push buttons share the LEDs, they need to be read a states
+   in a special way. But there are many steps. The push buttons are
+   (normally) read by the interrupt routine. So this function should
+   not be used directly from the main program. */
+#  define BUTTONS_SPECIAL
+static inline rawbutton_t buttons_read(void) {
+  rawbutton_t buttons;
+  uint8_t p = BUTTONS_MUX_DDR;
+  BUTTONS_MUX_DDR &= ~(_BV(BUTTONS_NEXT_PIN) | _BV(BUTTONS_PREV_PIN));
+  BUTTONS_MUX_PORT |= (_BV(BUTTONS_NEXT_PIN) | _BV(BUTTONS_PREV_PIN));
+  buttons = BUTTONS_INPUT;
+  BUTTONS_MUX_PORT &= ~(_BV(BUTTONS_NEXT_PIN) | _BV(BUTTONS_PREV_PIN));
+  BUTTONS_MUX_DDR = p;
+  return (buttons & (_BV(BUTTONS_NEXT_PIN) | _BV(BUTTONS_PREV_PIN)));
+}
+
+#  ifdef CONFIG_VCPULED
+#    define VCPU_LED_FUNCT
+static inline __attribute__((always_inline)) void set_vcpu_led(uint8_t state) {
+  if (state)
+    LED_VCPU_PORT &= ~_BV(LED_VCPU_PIN);
+  else
+    LED_VCPU_PORT |= _BV(LED_VCPU_PIN);
+}
+#  endif
+
+
 #else
 #  error "CONFIG_HARDWARE_VARIANT is unset or set to an unknown value."
 #endif
@@ -982,6 +1213,10 @@ static inline void ieee_interface_init(void) {
 #  error Sorry, dual-interface devices must select only one interface at compile time!
 #endif
 
+#if defined(CONFIG_UART_DEBUG) && (CONFIG_FASTSERIAL_MODE >= 2)
+#  error Fast Serial and UART Debug cannot be used at the same time!
+#endif
+
 /* --- Buttons --- */
 
 /* Button NEXT changes to the next disk image and enables sleep mode (held) */
@@ -991,13 +1226,17 @@ static inline void ieee_interface_init(void) {
 #  define BUTTON_PREV _BV(BUTTONS_PREV_PIN)
 
 /* Read the raw button state - a depressed button should read as 0 */
+#  ifndef BUTTONS_SPECIAL
 static inline rawbutton_t buttons_read(void) {
   return BUTTONS_INPUT & (BUTTON_NEXT | BUTTON_PREV);
 }
+#  endif
 
 static inline void buttons_init(void) {
+#  ifdef BUTTONS_DDR
   BUTTONS_DDR  &= (uint8_t)~(BUTTON_NEXT | BUTTON_PREV);
   BUTTONS_PORT |= BUTTON_NEXT | BUTTON_PREV;
+#  endif
 }
 
 
@@ -1019,8 +1258,10 @@ static inline uint8_t device_hw_address(void) {
 }
 /* Configure hardware device address pins */
 static inline void device_hw_address_init(void) {
+#  ifdef DEVICE_HW_ADDR_DDR
   DEVICE_HW_ADDR_DDR  &= ~(_BV(DEVICE_HW_ADDR_B0) | _BV(DEVICE_HW_ADDR_B1));
   DEVICE_HW_ADDR_PORT |=   _BV(DEVICE_HW_ADDR_B0) | _BV(DEVICE_HW_ADDR_B1);
+#  endif
 }
 #endif
 
@@ -1032,9 +1273,13 @@ static inline void leds_init(void) {
   /* Note: Depending on the chip and register these lines can compile */
   /*       to one instruction each on AVR. For two bits this is one   */
   /*       instruction shorter than "DDRC |= _BV(PC0) | _BV(PC1);"    */
+#ifdef LED_BUSY_DDR
   LED_BUSY_DDR |= _BV(LED_BUSY_PIN);      /* Port pin set to OUTPUT */
-#ifdef LED_DIRTY_PIN
+#endif
+#ifdef LED_DIRTY_DDR
+#  ifdef LED_DIRTY_PIN
   LED_DIRTY_DDR |= _BV(LED_DIRTY_PIN);    /* Port pin set to OUTPUT */
+#  endif
 #endif
 
 // VCPU RUN LED, if required, set output level to required value.
@@ -1085,8 +1330,12 @@ static inline __attribute__((always_inline)) void set_dirty_led(uint8_t state) {
 
 /* Toggle function used for error blinking */
 static inline void toggle_dirty_led(void) {
+#  ifdef LED_DIRTY_INPUT
   /* Sufficiently new AVR cores have a toggle function */
   LED_DIRTY_INPUT |= _BV(LED_DIRTY_PIN);      /* Compiler optimized to SBI instruction, no IN/ORI/OUT */
+#  else
+  LED_DIRTY_PORT ^= _BV(LED_DIRTY_PIN);
+#  endif
 }
 #endif
 
@@ -1117,12 +1366,21 @@ static inline void toggle_led(void) {
 /* VCPU run flag set/clear */
 /* This function is *NOT* LED-switch only, the bit-value (level) is *NOT* configurabe! */
 #ifdef CONFIG_VCPUSUPPORT
+  #ifndef VCPURUNFLAG_REG
+    #define VCPURUNFLAG_REG globalflags
+    #define VCPURUNFLAG_BIT VCPU_RUN_FLAG_BIT
+  #endif
 static inline __attribute__((always_inline)) void set_vcpurunflag(uint8_t state) {
   if (state)
-    VCPURUNFLAG_REG |= (1 << VCPURUNFLAG_BIT);
+      VCPURUNFLAG_REG |= (1 << VCPURUNFLAG_BIT);
   else
-    VCPURUNFLAG_REG &= ~(1 << VCPURUNFLAG_BIT);
+      VCPURUNFLAG_REG &= ~(1 << VCPURUNFLAG_BIT);
 }
+/* VCPU indicator led. AVR targets no separate VCPU led, unless you have already defined one. :) */
+/* The previous function can still be used for status feedback! */
+  #ifndef VCPU_LED_FUNCT
+    #define set_vcpu_led(x) do {} while(0)
+  #endif
 #endif
 
 
@@ -1248,45 +1506,43 @@ static inline __attribute__((always_inline)) void set_srq(uint8_t state) {
 // for testing purposes only, probably does not do what you want!
 #define toggle_srq() IEC_INPUT |= IEC_OBIT_SRQ
 
+/* Parallel handshake interrupt enable/disable: */
+#ifdef HAVE_PARALLEL
+static inline void parallel_irq_enable(void) {
+  PARALLEL_IRQFLAG_REG = _BV(PARALLEL_IRQEN_BIT);       // Clear pendig IRQ
+  PARALLEL_IRQEN_REG |= _BV(PARALLEL_IRQEN_BIT);        // Enable parallel IRQ
+}
+
+static inline void parallel_irq_disable(void) {
+  PARALLEL_IRQEN_REG &= ~(_BV(PARALLEL_IRQEN_BIT));     // Disable parallel IRQ
+  //PARALLEL_IRQFLAG_REG = _BV(PARALLEL_IRQEN_BIT);       // Clear pendig IRQ
+}
+#endif
+
+
 /* IEC lines initialisation */
 static inline void iec_interface_init(void) {
-#ifdef IEC_SEPARATE_OUT
+#ifndef IEC_IFINIT_IN_BRDINIT
+#  ifdef IEC_SEPARATE_OUT
   /* Set up the input port - pullups on all lines */
   IEC_DDRIN  &= (uint8_t)~(IEC_BIT_ATN  | IEC_BIT_CLOCK  | IEC_BIT_DATA  | IEC_BIT_SRQ);
   IEC_PORTIN |= IEC_BIT_ATN | IEC_BIT_CLOCK | IEC_BIT_DATA | IEC_BIT_SRQ;
   /* Set up the output port - all lines high */
   IEC_DDROUT |=            IEC_OBIT_ATN | IEC_OBIT_CLOCK | IEC_OBIT_DATA | IEC_OBIT_SRQ;
   IEC_PORT   &= (uint8_t)~(IEC_OBIT_ATN | IEC_OBIT_CLOCK | IEC_OBIT_DATA | IEC_OBIT_SRQ);
-#else
+#  else
   /* Pullups would be nice, but AVR can't switch from */
   /* low output to hi-z input directly                */
   IEC_DDR  &= (uint8_t)~(IEC_BIT_ATN | IEC_BIT_CLOCK | IEC_BIT_DATA | IEC_BIT_SRQ);
   IEC_PORT &= (uint8_t)~(IEC_BIT_ATN | IEC_BIT_CLOCK | IEC_BIT_DATA);
   /* SRQ is special-cased because it may be unconnected */
   IEC_PORT |= IEC_BIT_SRQ;
-#endif
-
-#ifdef HAVE_PARALLEL
-  /* set data lines to input with pullup */
-  PARALLEL_PDDR  = 0;
-  PARALLEL_PPORT = 0xff;
-
-  /* set HSK_OUT and _IN to input with pullup */
-  PARALLEL_HDDR  &= ~(_BV(PARALLEL_HSK_OUT_BIT) |
-                      _BV(PARALLEL_HSK_IN_BIT));
-  PARALLEL_HPORT |= _BV(PARALLEL_HSK_OUT_BIT) |
-                    _BV(PARALLEL_HSK_IN_BIT);
-
-  /* enable interrupt for parallel handshake */
-#  ifdef PARALLEL_PCINT_GROUP
-  /* excluse PCINT group */
-  PARALLEL_PCMSK |= _BV(PARALLEL_HSK_IN_BIT);
-  PCICR |= _BV(PARALLEL_PCINT_GROUP);
-  PCIFR |= _BV(PARALLEL_PCINT_GROUP);
-#  else
-  /* exclusive INTx line */
-#    error Implement me!
 #  endif
+#endif
+#ifdef HAVE_PARALLEL
+  parallelport_init();    /* Configure parallel port lines and interrupt */
+  //parallel_irq_enable();
+  parallel_irq_disable();
 #endif
 }
 

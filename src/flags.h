@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -40,8 +40,17 @@ extern uint8_t globalflags;
 #define AUTOSWAP_ACTIVE  (1<<2)
 #define SWAPLIST_ASCII   (1<<5)
 
+/* VCPU RUN flag definition. If not defined elsewhere, will use this */
+#define VCPU_RUN_FLAG_BIT 1
+#define VCPU_RUN_FLAG_MSK (1<<VCPU_RUN_FLAG_BIT)
+
+/* Fast serial receive enable + BYTE ready flags: */
+#define FASTSER_RECVEN_BIT 6
+#define FASTSER_RECVEN_MSK (1<<FASTSER_RECVEN_BIT)
+#define FASTSER_RECVRDY_BIT 7
+#define FASTSER_RECVRDY_MSK (1<<FASTSER_RECVRDY_BIT)
+
 /* permanent (EEPROM-saved) flags */
-/* 1<<1 was JIFFY_ENABLED */
 #define EXTENSION_HIDING (1<<3)
 #define POSTMATCH        (1<<4)
 

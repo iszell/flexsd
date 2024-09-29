@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -37,6 +37,7 @@
 #include "progmem.h"
 #include "ustring.h"
 #include "utils.h"
+#include "iec.h"
 #include "errormsg.h"
 
 uint8_t current_error;
@@ -220,8 +221,23 @@ void set_error_ts(uint8_t errornum, uint8_t track, uint8_t sector) {
 
       *msg++ = 'I';
       msg = appendnumber(msg, image_as_dir);
-
       *msg++ = ':';
+
+#ifdef CONFIG_PARALLEL_DOLPHIN
+      *msg++ = 'P';
+      if ((xbusen_config&0x0c) == 0x04)
+        *msg++ = '+';
+      else
+        *msg++ = '-';
+      *msg++ = ':';
+#endif
+
+#if CONFIG_FASTSERIAL_MODE >= 2
+      *msg++ = 'F';
+      *msg++ = 0x30+(xbusen_config&0x03);         // F0/F1/F2
+      *msg++ = ':';
+#endif
+
       *msg++ = 'R';
       ustrcpy(msg, rom_filename);
       msg += ustrlen(rom_filename);
@@ -281,6 +297,8 @@ void set_error_ts(uint8_t errornum, uint8_t track, uint8_t sector) {
 
 /* Callback for the error channel buffer */
 uint8_t set_ok_message(buffer_t *buf) {
+  (void)buf;
+
   set_error(0);
   return 0;
 }

@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -50,6 +50,7 @@ uint8_t rom_filename[ROM_NAME_LENGTH+1];
  * @drvflags1  : 16 bits of drv mappings, organized as 4 nybbles.
  * @imagedirs  : Disk images-as-directory mode
  * @romname    : M-R rom emulation file name (zero-padded, but not terminated)
+ * @xbusmodes  : B10: Fast Serial mode: 0: disabled, 1: enabled, 2: automatic (default disabled, but if C128 boot file required, enable)
  *
  * This is the data structure for the contents of the EEPROM.
  *
@@ -69,6 +70,9 @@ static EEMEM struct {
   uint16_t drvconfig1;
   uint8_t  imagedirs;
   uint8_t  romname[ROM_NAME_LENGTH];
+#if ((CONFIG_FASTSERIAL_MODE >= 2) || defined(HAVE_PARALLEL))
+  uint8_t  xbusmodes;
+#endif
 } __attribute__((packed)) storedconfig;
 
 /**
@@ -87,9 +91,13 @@ void read_configuration(void) {
   file_extension_mode  = 1;                    /* Store x00 extensions except for PRG */
   set_drive_config(get_default_driveconfig()); /* Set the default drive configuration */
   memset(rom_filename, 0, sizeof(rom_filename));
+#if ((CONFIG_FASTSERIAL_MODE >= 2) || defined(HAVE_PARALLEL))
+  xbusen_config = 0x00;
+#endif
 
   /* Use the NEXT button to skip reading the EEPROM configuration */
-  if (!(buttons_read() & BUTTON_NEXT)) {
+  //if (!(buttons_read() & BUTTON_NEXT)) {
+  if (!(buttonstate & BUTTON_NEXT)) {
     ignore_keys();
     return;
   }
@@ -145,6 +153,11 @@ void read_configuration(void) {
   if (size > 29)
     eeprom_read_block(rom_filename, &storedconfig.romname, ROM_NAME_LENGTH);
 
+#if ((CONFIG_FASTSERIAL_MODE >= 2) || defined(HAVE_PARALLEL))
+  if (size > 30)
+    xbusen_config = eeprom_read_byte(&storedconfig.xbusmodes);
+#endif
+
   /* Prevent problems due to accidental writes */
   eeprom_safety();
 }
@@ -173,6 +186,9 @@ void write_configuration(void) {
   eeprom_write_byte(&storedconfig.imagedirs, image_as_dir);
   memset(rom_filename+ustrlen(rom_filename), 0, sizeof(rom_filename)-ustrlen(rom_filename));
   eeprom_write_block(rom_filename, &storedconfig.romname, ROM_NAME_LENGTH);
+#if ((CONFIG_FASTSERIAL_MODE >= 2) || defined(HAVE_PARALLEL))
+  eeprom_write_byte(&storedconfig.xbusmodes, xbusen_config);
+#endif
 
   /* Calculate checksum over EEPROM contents */
   checksum = 0;
@@ -185,4 +201,3 @@ void write_configuration(void) {
   /* Prevent problems due to accidental writes */
   eeprom_safety();
 }
-

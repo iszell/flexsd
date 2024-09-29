@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -39,6 +39,7 @@
 #include "d64ops.h"
 
 #define D41_ERROR_OFFSET 174848
+#define D41X_ERROR_OFFSET 196608
 #define D71_ERROR_OFFSET 349696
 #define D81_ERROR_OFFSET 819200
 
@@ -46,6 +47,8 @@
 #define D41_BAM_SECTOR          0
 #define D41_BAM_BYTES_PER_TRACK 4
 #define D41_BAM_BITFIELD_BYTES  3
+/* BAM offset for 40 track .d64, Dolphin DOS style */
+#define D41_BAM_40TRK_DD_OFFS   0x1c
 
 #define D81_BAM_TRACK           40
 #define D81_BAM_SECTOR1         1
@@ -82,11 +85,13 @@
 
 typedef enum { BAM_BITFIELD, BAM_FREECOUNT } bamdata_t;
 
+#if CONFIG_DXX_ERRORINFO >= 2
 struct {
   uint8_t part;
   uint8_t track;
   uint8_t errors[MAX_SECTORS_PER_TRACK];
 } errorcache;
+#endif
 
 static buffer_t *bam_buffer;  // recently-used buffer
 static buffer_t *bam_buffer2; // secondary buffer
@@ -109,6 +114,10 @@ static void format_dnp_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t
 
 static const PROGMEM struct param_s d41param = {
   18, 1, 35, 0x90, 0xa2, 10, 3, format_d41_image
+};
+
+static const PROGMEM struct param_s d41xparam = {
+  18, 1, 40, 0x90, 0xa2, 10, 3, format_d41_image
 };
 
 static const PROGMEM struct param_s d71param = {
@@ -150,13 +159,14 @@ static uint16_t sector_lba(uint8_t part, uint8_t track, const uint8_t sector) {
   track--; /* Track numbers are 1-based */
 
   switch (partition[part].imagetype & D64_TYPE_MASK) {
-  case D64_TYPE_D41:
   case D64_TYPE_D71:
   default:
     if (track >= 35) {
       offset = 683;
       track -= 35;
     }
+    __attribute__((fallthrough));
+  case D64_TYPE_D41:
     if (track < 17)
       return track*21 + sector + offset;
     if (track < 24)
@@ -195,11 +205,12 @@ static uint32_t sector_offset(uint8_t part, uint8_t track, const uint8_t sector)
  */
 static uint16_t sectors_per_track(uint8_t part, uint8_t track) {
   switch (partition[part].imagetype & D64_TYPE_MASK) {
-  case D64_TYPE_D41:
   case D64_TYPE_D71:
   default:
     if (track > 35)
       track -= 35;
+    __attribute__((fallthrough));
+  case D64_TYPE_D41:
     if (track < 18)
       return 21;
     if (track < 25)
@@ -231,12 +242,16 @@ static uint16_t sectors_per_track(uint8_t part, uint8_t track) {
  * 2 if the range check failed.
  */
 static uint8_t checked_read(uint8_t part, uint8_t track, uint8_t sector, uint8_t *buf, uint16_t len, uint8_t error) {
-  if (track < 1 || track > get_param(part, LAST_TRACK) ||
+  uint8_t lasttrack;
+  lasttrack = get_param(part, LAST_TRACK);
+  if (track < 1 || track > lasttrack ||
       sector >= sectors_per_track(part, track)) {
     set_error_ts(error,track,sector);
     return 2;
   }
 
+#if CONFIG_DXX_ERRORINFO >= 2
+  DWORD offset;
   if (partition[part].imagetype & D64_HAS_ERRORINFO) {
     /* Check if the sector is marked as bad */
     if (errorcache.part != part || errorcache.track != track) {
@@ -245,22 +260,33 @@ static uint8_t checked_read(uint8_t part, uint8_t track, uint8_t sector, uint8_t
 
       switch (partition[part].imagetype & D64_TYPE_MASK) {
       case D64_TYPE_D41:
-        if (image_read(part, D41_ERROR_OFFSET + sector_lba(part,track,0),
+        offset = D41_ERROR_OFFSET;
+        if (lasttrack > 35)               // 40 track .d64
+          offset = D41X_ERROR_OFFSET;
+        if (image_read(part, offset + sector_lba(part,track,0),
                        errorcache.errors, sectors_per_track(part, track)) >= 2)
           return 2;
         break;
 
+    /* If these (image+errorinfo) versions are disabled but the mount is allowed,
+        the d64_mount() function sets a 'normal' image type without errorinfo.
+        For this reason, these checks can be removed to save space. */
+
+#  if CONFIG_DXX_ERRORINFO >= 3
       case D64_TYPE_D71:
         if (image_read(part, D71_ERROR_OFFSET + sector_lba(part,track,0),
                        errorcache.errors, sectors_per_track(part, track)) >= 2)
           return 2;
         break;
+#  endif
 
+#  if CONFIG_DXX_ERRORINFO >= 4
       case D64_TYPE_D81:
         if (image_read(part, D81_ERROR_OFFSET + sector_lba(part,track,0),
                        errorcache.errors, sectors_per_track(part, track)) >= 2)
           return 2;
         break;
+#  endif
 
       default:
         /* Should not happen unless someone enables error info
@@ -285,6 +311,7 @@ static uint8_t checked_read(uint8_t part, uint8_t track, uint8_t sector, uint8_t
     }
     /* 1 is OK, unknown values are accepted too */
   }
+#endif
 
   return image_read(part, sector_offset(part,track,sector), buf, len);
 }
@@ -503,6 +530,8 @@ static uint8_t move_bam_window(uint8_t part, uint8_t track, bamdata_t type, uint
     t   = D41_BAM_TRACK;
     s   = D41_BAM_SECTOR;
     pos = D41_BAM_BYTES_PER_TRACK * track + (type == BAM_BITFIELD ? 1:0);
+    if (track > 35)                     // In 40 track .d64:
+      pos += D41_BAM_40TRK_DD_OFFS;     // extra tracks BAM data after the disk header
     break;
 
   case D64_TYPE_D71:
@@ -1092,6 +1121,10 @@ static uint8_t d64_read(buffer_t *buf) {
  * and returns 1.
  */
 static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
+  (void)buf;
+  (void)position;
+  (void)index;
+
   set_error(ERROR_SYNTAX_UNABLE);
   return 1;
 }
@@ -1199,6 +1232,7 @@ static uint8_t d64_write_cleanup(buffer_t *buf) {
 /* ------------------------------------------------------------------------- */
 
 uint8_t d64_mount(path_t *path, uint8_t *name) {
+  (void)name;         // Name required for sanity check only
   uint8_t imagetype;
   uint8_t part = path->part;
   uint32_t fsize = partition[part].imagehandle.fsize;
@@ -1209,30 +1243,64 @@ uint8_t d64_mount(path_t *path, uint8_t *name) {
     memcpy_P(&partition[part].d64data, &d41param, sizeof(struct param_s));
     break;
 
+#if CONFIG_DXX_ERRORINFO >= 1
   case 175531:
+#  if CONFIG_DXX_ERRORINFO >= 2
     imagetype = D64_TYPE_D41 | D64_HAS_ERRORINFO;
+#  else
+    imagetype = D64_TYPE_D41;
+#  endif
     memcpy_P(&partition[part].d64data, &d41param, sizeof(struct param_s));
     break;
+#endif
+
+  case 196608:      // 40 track .d64
+    imagetype = D64_TYPE_D41;
+    memcpy_P(&partition[part].d64data, &d41xparam, sizeof(struct param_s));
+    break;
+
+#if CONFIG_DXX_ERRORINFO >= 1
+  case 197376:      // 40 track .d64 + errorinfo
+#  if CONFIG_DXX_ERRORINFO >= 2
+    imagetype = D64_TYPE_D41 | D64_HAS_ERRORINFO;
+#  else
+    imagetype = D64_TYPE_D41;
+#  endif
+    memcpy_P(&partition[part].d64data, &d41xparam, sizeof(struct param_s));
+    break;
+#endif
 
   case 349696:
     imagetype = D64_TYPE_D71;
     memcpy_P(&partition[part].d64data, &d71param, sizeof(struct param_s));
     break;
 
+#if CONFIG_DXX_ERRORINFO >= 1
   case 351062:
+#  if CONFIG_DXX_ERRORINFO >= 3
     imagetype = D64_TYPE_D71 | D64_HAS_ERRORINFO;
+#  else
+    imagetype = D64_TYPE_D71;
+#  endif
     memcpy_P(&partition[part].d64data, &d71param, sizeof(struct param_s));
     break;
+#endif
 
   case 819200:
     imagetype = D64_TYPE_D81;
     memcpy_P(&partition[part].d64data, &d81param, sizeof(struct param_s));
     break;
 
+#if CONFIG_DXX_ERRORINFO >= 1
   case 822400:
+#  if CONFIG_DXX_ERRORINFO >= 4
     imagetype = D64_TYPE_D81 | D64_HAS_ERRORINFO;
+#  else
+    imagetype = D64_TYPE_D81;
+#  endif
     memcpy_P(&partition[part].d64data, &d81param, sizeof(struct param_s));
     break;
+#endif
 
   default:
     if ((fsize % (256*256L)) != 0) {
@@ -1241,14 +1309,14 @@ uint8_t d64_mount(path_t *path, uint8_t *name) {
     }
 
     /* sanity check: ignore 40-track D64 images */
-    if (fsize == 196608) {
-      uint8_t *ptr = ustrrchr(name, '.');
-
-      if (ptr[2] == '6' && ptr[3] == '4') {
-        set_error(ERROR_IMAGE_INVALID);
-        return 1;
-      }
-    }
+//    if (fsize == 196608) {
+//      uint8_t *ptr = ustrrchr(name, '.');
+//    
+//      if (ptr[2] == '6' && ptr[3] == '4') {
+//        set_error(ERROR_IMAGE_INVALID);
+//        return 1;
+//      }
+//    }
 
     imagetype = D64_TYPE_DNP;
     memcpy_P(&partition[part].d64data, &dnpparam, sizeof(struct param_s));
@@ -1267,9 +1335,11 @@ uint8_t d64_mount(path_t *path, uint8_t *name) {
 
   bam_refcount++;
 
+#if CONFIG_DXX_ERRORINFO >= 2
   if (imagetype & D64_HAS_ERRORINFO)
     /* Invalidate error cache */
     errorcache.part = 255;
+#endif
 
   return 0;
 }
@@ -1309,7 +1379,8 @@ static int8_t d64_readdir(dh_t *dh, cbmdirent_t *dent) {
   memset(dent, 0, sizeof(cbmdirent_t));
 
   dent->opstype = OPSTYPE_DXX;
-  dent->typeflags = ops_scratch[DIR_OFS_FILE_TYPE] ^ FLAG_SPLAT;
+  dent->typeflags = (ops_scratch[DIR_OFS_FILE_TYPE] ^ FLAG_SPLAT)
+    & ~FLAG_HIDDEN;
 
   if ((dent->typeflags & TYPE_MASK) > TYPE_DIR)
     /* Change invalid types to DEL */
@@ -1532,6 +1603,12 @@ static void d64_open_write(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
 }
 
 static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t length, uint8_t mode) {
+  (void)path;
+  (void)dent;
+  (void)buf;
+  (void)length;
+  (void)mode;
+
   set_error(ERROR_SYNTAX_UNABLE);
 }
 

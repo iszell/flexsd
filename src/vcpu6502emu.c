@@ -5,7 +5,7 @@
 
    FAT filesystem access based on code from ChaN and Jim Brain, see ff.c|h.
 
-   Virtual 6502 CPU (VCPU) emulation by balagesz, (C) 2021
+   Virtual 6502 CPU (VCPU) emulation by balagesz, (C) 2021+
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -37,8 +37,12 @@
 #include "fileops.h"
 #include "fatops.h"
 #include "diskchange.h"
+#include "iec.h"
 #include "iec-bus.h"
+#include "fastloader-ll.h"
+#include "fastloader.h"
 #include "vcpu6502emu.h"
+#include "uart.h"
 
 Tcpureg vcpuregs;
 Tploaderdatas plparams;
@@ -74,7 +78,6 @@ void StackPaint(void) {
                   "    breq .loop"::);
 #endif
 }
-
 #endif
 
 /* Set "file" parameters for VCPU usage */
@@ -88,7 +91,8 @@ void return_parameters(uint8_t secondary) {
       vcpuregs.y = (((uint8_t *)buf->data - (uint8_t *)&bufferdata) >> 8);
       error_buffer[PARAMPOS+0] = buf->position;
       error_buffer[PARAMPOS+1] = buf->lastused;
-      error_buffer[PARAMPOS+2] = buf->sendeoi;
+      //error_buffer[PARAMPOS+2] = buf->sendeoi;
+      error_buffer[PARAMPOS+2] = (buf->sendeoi ? 0xff : 0x00);    // Result is always 0x00 / 0xff (EOI)
       return;
     }
   }
@@ -114,21 +118,34 @@ uint8_t copymemtocommandbuffer(void) {
 void vcpu6502emu(void) {
   buffer_t *buf;
   if (emucalled != 0) return;       // No recursive call accepted
+  delay_us(250);                    // Wait a moment (CLK/DAT lines maybe released by host)
   emucalled = 1;
+#if CONFIG_FASTSERIAL_MODE >= 1
+  fastser_recvdis();                // Disable FastSerial receiver
+#endif
+#ifdef HAVE_PARALLEL
+  #ifdef __AVR__
+  parallel_irq_disable();           // Disable parallel interrupt
+  #else
+  parallel_irq_enable();            // Enable parallel interrupt on ARM targets; handshake handled by software interrupt
+  #endif
+#endif
   while (emucalled) {
     timer_disable();                // Disable timer interrupt
     set_vcpurunflag(1);             // RUN flag set, if any hardware interrupt clear, VCPU core exit
+    set_vcpu_led(1);
     interruptcode = 0;
     vcpuregs.interrupt = 0;
     vcpuregs.reqfunction = 0;
+    uart_flush();                   // If uart debug enabled, flush serial buffer
     vcpu6502core();                 // Call VCPU
     timer_enable();                 // Re-Enable timer interrupt
     if (vcpuregs.interrupt == VCPU_FUNCTIONCALL) {
       switch (vcpuregs.reqfunction) {
-        case SYSCALL_DIRECTCOMMAND_MEM: {
+        case SYSCALL_DIRECTCOMMAND_MEM:
           if (copymemtocommandbuffer()) break;    // If error in params, return, else continue
-        }
-        case SYSCALL_DIRECTCOMMAND: {
+          __attribute__((fallthrough));
+        case SYSCALL_DIRECTCOMMAND:
           command_length = vcpuregs.x;
           buffers[ERRORBUFFER_IDX].lastused = 0;
           current_error = 0xff;     // Error code = "not set"
@@ -136,20 +153,18 @@ void vcpu6502emu(void) {
           vcpuregs.x = buffers[ERRORBUFFER_IDX].lastused + 1;
           vcpuregs.a = current_error;
           break;
-        }
-        case SYSCALL_OPEN_MEM: {
+        case SYSCALL_OPEN_MEM:
           if (copymemtocommandbuffer()) break;      // If error in params, return, else continue
-        }
-        case SYSCALL_OPEN: {
+          __attribute__((fallthrough));
+        case SYSCALL_OPEN:
           command_length = vcpuregs.x;
           current_error = 0xff;     // Error code = "not set"
           if (vcpuregs.a < 15) file_open(vcpuregs.a);   // File Open and continue to return params
-        }
-        case SYSCALL_GETCHANNELPARAMS: {
+          __attribute__((fallthrough));
+        case SYSCALL_GETCHANNELPARAMS:
           return_parameters(vcpuregs.a);
           break;
-        }
-        case SYSCALL_CLOSE: {
+        case SYSCALL_CLOSE:
           buf = find_buffer(vcpuregs.a);
           current_error = 0xff;     // Error code = "not set"
           if (buf) {
@@ -159,14 +174,12 @@ void vcpu6502emu(void) {
             vcpuregs.a = 0xff;
           }
           break;
-        }
-        case SYSCALL_CLOSEALL: {
+        case SYSCALL_CLOSEALL:
           current_error = 0xff;     // Error code = "not set"
           free_multiple_buffers(FMB_USER_CLEAN);
           vcpuregs.a = 0x00;
           break;
-        }
-        case SYSCALL_REFILLBUFFER: {
+        case SYSCALL_REFILLBUFFER:
           buf = find_buffer(vcpuregs.a);
           current_error = 0xff;     // Error code = "not set"
           if (!buf) return_parameters(0xff);
@@ -177,67 +190,72 @@ void vcpu6502emu(void) {
             else return_parameters(vcpuregs.a);
           }
           break;
-        }
-        case SYSCALL_CHANGEDISK: {
+        case SYSCALL_CHANGEDISK:
           linenum = vcpuregs.x;
-          if (mount_line()) vcpuregs.a = 0x00;
-          else vcpuregs.a = 0xff;
+          if (!(mount_line()) || (vcpuregs.x != linenum)) {   // mount_line() report error if no swapfile set, good
+            vcpuregs.a = 0xff;
+            vcpuregs.x = linenum;
+          } else vcpuregs.a = 0x00;
           break;
-        }
-        case SYSCALL_DISABLEATNIRQ: {
+        case SYSCALL_DISABLEATNIRQ:
           set_atn_irq(0);           // Disable ATN interrupt
           break;
-        }
-        case SYSCALL_ENABLEATNIRQ: {
+        case SYSCALL_ENABLEATNIRQ:
           set_atn_irq(1);           // Enable ATN interrupt
           break;
-        }
-        case SYSCALL_SETFATPARAMS: {
+        case SYSCALL_SETFATPARAMS:
           fat_setbufferparams(vcpuregs.x, vcpuregs.y);
           vcpuregs.x = fatfile_blockstart;
           vcpuregs.y = fatfile_blockbytesno & 0xff;
           break;
-        }
-        case SYSCALL_EXIT_OK: {
+        case SYSCALL_EXIT_OK:
           set_error(ERROR_OK);       // "OK"
           break;
-        }
-        case SYSCALL_EXIT_SETERROR: {
+        case SYSCALL_EXIT_SETERROR:
           set_error_ts(vcpuregs.a, vcpuregs.x, vcpuregs.y);
           break;
-        }
-        case SYSCALL_EXIT_FILLEDERROR: {
+        case SYSCALL_EXIT_FILLEDERROR:
           buffers[ERRORBUFFER_IDX].lastused = vcpuregs.x - 1;
           if (buffers[ERRORBUFFER_IDX].lastused >= CONFIG_ERROR_BUFFER_SIZE) {
             buffers[ERRORBUFFER_IDX].lastused = 0;
           }
           break;
-        }
-        case SYSCALL_EXIT_REMAIN: {
+        case SYSCALL_EXIT_REMAIN:
           break;                    // No new data in error buffer
-        }
-        default: {
-          set_error_ts(ERROR_VCPU, 101, vcpuregs.reqfunction);
+        default:
           emucalled = 0;          // Unknown function: exit
+          free_multiple_buffers(FMB_USER_CLEAN);
+          set_error_ts(ERROR_VCPU, 101, vcpuregs.reqfunction);
           break;
-        }
       }
       if (vcpuregs.reqfunction < 0x10) {    // If required, exit
         emucalled = 0;    
       }
     } else {
+      free_multiple_buffers(FMB_USER_CLEAN);
       set_error_ts(ERROR_VCPU, 100, vcpuregs.interrupt);
       break;              // No syscall: exit
     }
   }
+#if CONFIG_FASTSERIAL_MODE >= 1
+  fastser_recvdis();                // Disable FastSerial receiver
+#endif
   set_atn(1);
   set_clock(1);
   set_data(1);
   set_srq(1);
-  if (current_error == ERROR_VCPU) free_multiple_buffers(FMB_USER_CLEAN);
   set_vcpurunflag(0);
+  set_vcpu_led(0);
   emucalled = 0;
   fat_setbufferparams(2, 254);      // Restore FAT buffer-start + buffer length
+#ifdef HAVE_PARALLEL
+  parallel_set_dir(PARALLEL_DIR_IN);  // Switch parport to input
+  parallel_sethiz_handshake();        // Release ACK to host handshake line
+  parallel_configure();               // (Re)configure parallel receiver
+#endif
+#if CONFIG_FASTSERIAL_MODE >= 2
+  fastser_configure();              // Enable/Disable FastSerial receiver
+#endif
   set_atn_irq(1);                   // Enable ATN interrupt
 }
 

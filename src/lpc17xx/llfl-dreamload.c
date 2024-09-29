@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -24,14 +24,15 @@
 */
 
 #include "config.h"
-#include <arm/NXP/LPC17xx/LPC17xx.h>
-#include <arm/bits.h>
+#include "bitband.h"
 #include "fastloader.h" // for fl_track etc.
 #include "iec-bus.h"
 #include "llfl-common.h"
 #include "timer.h"
 #include "fastloader-ll.h"
-
+#ifdef CONFIG_VCPUSUPPORT
+  #include "vcpu6502emu.h"
+#endif
 
 void dreamload_send_byte(uint8_t byte) {
   unsigned int i;
@@ -122,6 +123,10 @@ IEC_ATN_HANDLER {
   } else {
     /* standard ATN acknowledge */
     set_data(0);
+#ifdef CONFIG_VCPUSUPPORT
+    interruptcode |= VCPU_ERROR_ATN;
+    set_vcpurunflag(0);
+#endif
   }
 }
 

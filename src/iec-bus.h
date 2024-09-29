@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -30,10 +30,17 @@
 
 /*** Input definitions (generic versions) ***/
 #ifndef IEC_ATN
-#  define IEC_ATN   (IEC_INPUT & IEC_BIT_ATN)
-#  define IEC_DATA  (IEC_INPUT & IEC_BIT_DATA)
-#  define IEC_CLOCK (IEC_INPUT & IEC_BIT_CLOCK)
-#  define IEC_SRQ   (IEC_INPUT & IEC_BIT_SRQ)
+#  ifndef IEC_INPUTS_INVERTED
+#    define IEC_ATN   (IEC_INPUT & IEC_BIT_ATN)
+#    define IEC_DATA  (IEC_INPUT & IEC_BIT_DATA)
+#    define IEC_CLOCK (IEC_INPUT & IEC_BIT_CLOCK)
+#    define IEC_SRQ   (IEC_INPUT & IEC_BIT_SRQ)
+#  else
+#    define IEC_ATN   (!(IEC_INPUT & IEC_BIT_ATN))
+#    define IEC_DATA  (!(IEC_INPUT & IEC_BIT_DATA))
+#    define IEC_CLOCK (!(IEC_INPUT & IEC_BIT_CLOCK))
+#    define IEC_SRQ   (!(IEC_INPUT & IEC_BIT_SRQ))
+#  endif
 #endif
 
 #ifdef IEC_INPUTS_INVERTED

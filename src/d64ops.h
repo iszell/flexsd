@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -48,8 +48,11 @@
 #define D64_TYPE_D41  2
 #define D64_TYPE_D71  3
 #define D64_TYPE_D81  4
-#define D64_HAS_ERRORINFO 128
-
+#if CONFIG_DXX_ERRORINFO >= 2
+#  define D64_HAS_ERRORINFO 128
+#else
+#  define D64_HAS_ERRORINFO 0
+#endif
 extern const fileops_t d64ops;
 
 uint8_t d64_mount(path_t *path, uint8_t *name);

@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
    Copyright (C) 2007-2008  M.Kiesel <mayne@users.sourceforge.net>
    Final Cartridge III, DreamLoad fastloader support:
    Copyright (C) 2008  Thomas Giesel <skoe@directbox.com>
@@ -34,6 +34,40 @@
 #include <avr/io.h>
 #include "vcpu6502emu.h"
 
+
+
+/* 240329+: Assembler macros for serial bus input handling.
+   The AVR version now also supports inverted inputs. These
+   macro definitions help avoid the "#ifndef/#else/#endif"
+   mess in the rest of the source. Some "#if"s remain in the
+   code, but far fewer than without them. */
+.macro  si_readbusdirect  reg
+        in      \reg, _SFR_IO_ADDR(IEC_INPUT)
+.endm
+#ifndef IEC_INPUTS_INVERTED
+  .macro  si_skipiflinelow  bitno
+        sbic    _SFR_IO_ADDR(IEC_INPUT), \bitno
+  .endm
+  .macro si_skipiflinehigh bitno
+        sbis    _SFR_IO_ADDR(IEC_INPUT), \bitno
+  .endm
+  .macro  si_invertregbits  reg
+        com     \reg
+  .endm
+#else
+  .macro  si_skipiflinelow  bitno
+        sbis    _SFR_IO_ADDR(IEC_INPUT), \bitno
+  .endm
+  .macro si_skipiflinehigh bitno
+        sbic    _SFR_IO_ADDR(IEC_INPUT), \bitno
+  .endm
+  .macro  si_invertregbits  reg
+        nop
+  .endm
+#endif
+
+
+
 /* Timing offsets for JiffyDos read/write */
 /* These values are added to the delayloop counter before the first      */
 /* bitpair read/write. They were determined experimentally to center the */
@@ -46,14 +80,63 @@
 #if defined(IEC_ATN_INT_VECT) && defined(CONFIG_LOADER_DREAMLOAD)
         ;; ===================================================================
         ;; ATN(+CLK) Interrupt service routine for IEC bus
+        ;; SRQ Interrupt service routine for IEC fast serial receiver
         ;; ===================================================================
         ;
+
+        .global IEC_ATN_INT_VECT
+IEC_ATN_INT_VECT:
+
+; Fast serial receiver: (ATN + SRQ Interrupt vector is only same, when PCI is used!)
+; Save CPU state in special way to be able to react quickly
+#if ((CONFIG_FASTSERIAL_MODE >= 1) && defined(IEC_SRQATN_VECT_SHARED))
+        si_skipiflinelow IEC_PIN_SRQ                            ;1/2
+        rjmp    fs_disabled                                     ;2      If SRQ not active, handle ATN
+
+        sbis    _SFR_IO_ADDR(globalflags), FASTSER_RECVEN_BIT   ;1/2    Skip, if FS recv. enabled
+        rjmp    fs_disabled                                     ;2      If FS receiver disabled, handle ATN
+
+        push    r18                                             ;2
+        in      r18, _SFR_IO_ADDR(SREG)                         ;1
+        push    r18                                             ;2
+        in      r18, _SFR_IO_ADDR(fastsershreg)                 ;1      Read shiftreg data
+        lsl     r18                                             ;1      Shift, if Cy=1: 8 bit received
+        si_skipiflinelow IEC_PIN_DATA                           ;1/2
+        ori     r18, 0x01                                       ;1      If DATA line 1, receivd bit 1
+        brcc    1f                                              ;1/2    If receive not complete, save actual state
+        out     _SFR_IO_ADDR(fastserrecvb), r18                 ;1      BYTE received, save data
+        sbi     _SFR_IO_ADDR(globalflags), FASTSER_RECVRDY_BIT  ;2      set Rcvd. flag
+        ldi     r18, 0x01                                       ;1      New receiver cycle start
+1:      out     _SFR_IO_ADDR(fastsershreg), r18                 ;1      Save shiftreg state
+
+        ldi     r18, 15                                         ;1      TimeOut (*5 clk) (15 = ~"9T")
+2:      si_skipiflinelow IEC_PIN_SRQ                            ;1/2
+        rjmp    3f                                              ;2
+        dec     r18                                             ;1
+        brne    2b                                              ;1/2
+        ldi     r18, 0x01                                       ;1      If SRQ low is too long, re-init receiver and handle ATN
+        out     _SFR_IO_ADDR(fastsershreg), r18                 ;1      Receiver shiftreg init
+        cbi     _SFR_IO_ADDR(globalflags), FASTSER_RECVRDY_BIT  ;2      Clear Rcvd. flag
+        pop     r18                                             ;2
+        out     _SFR_IO_ADDR(SREG), r18                         ;1
+        pop     r18                                             ;2
+        rjmp    fs_disabled                                     ;2
+
+3:      pop     r18                                             ;2
+        out     _SFR_IO_ADDR(SREG), r18                         ;1
+        ldi     r18, (1<<IEC_PCIFR_BIT)                         ;1
+        out     _SFR_IO_ADDR(PCIFR), r18                        ;1      Clear pending PCI (SRQ Low-to-High set)
+        pop     r18                                             ;2
+        reti                                                    ;4
+
+fs_disabled:
+#endif
+; Fast serial receiver end.
+
         ; Functions called from here may change these registers:
         ; r0, r18, r19, r24
         ; Other registers must be saved and restored by the called functions
         ;
-        .global IEC_ATN_INT_VECT
-IEC_ATN_INT_VECT:
         ; functions called from here must only change these registers:
         push    r18
         in      r18, _SFR_IO_ADDR(SREG)
@@ -69,7 +152,7 @@ IEC_ATN_INT_VECT:
 #endif
 
         ; check if ATN is low
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+        si_skipiflinelow IEC_PIN_ATN
         rjmp    iiv_atn_irq_end
 
         ; ATN is low, continue depending from active fast loader
@@ -97,7 +180,7 @@ iiv_atn_irq_end:
         brtc    iiv_clock_irq_end       ; if it is an IRQ source
 
         ; check if CLOCK is low
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+        si_skipiflinelow IEC_PIN_CLOCK
         rjmp    iiv_clock_irq_end
 
         ; CLOCK is low, continue depending from active fast loader
@@ -143,7 +226,7 @@ IEC_CLK_INT_VECT:
         push    r0
 
         ; check if CLOCK is low
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+        si_skipiflinelow IEC_PIN_CLOCK
         rjmp    clk_irq_end
 
         ; CLOCK is low, continue depending from active fast loader
@@ -168,6 +251,12 @@ clk_irq_end:
         reti
 #endif // ifdef IEC_CLK_INT_VECT
 
+        ;; ===================================================================
+        ;; SRQ Interrupt vector, if not shared with ATN:
+        ;; ===================================================================
+#if ((CONFIG_FASTSERIAL_MODE >= 1) && !defined(IEC_SRQATN_VECT_SHARED))
+  error "SRQ+ATN vector not shared, implement me!"
+#endif
 
         ;; ===================================================================
         ;;  Utility routines
@@ -204,13 +293,13 @@ delay1us:
 
         ;; wait for ATN high
 wait_atn_high:
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+        si_skipiflinehigh IEC_PIN_ATN
         rjmp    wait_atn_high
         ret
 
         ;; wait for ATN low
 wait_atn_low:
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+        si_skipiflinelow IEC_PIN_ATN
         rjmp    wait_atn_low
         ret
 
@@ -238,16 +327,16 @@ jiffy_receive:
         cbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA
 
         ;; Wait until clock is high and emulate ATN-Ack
-0:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+0:      si_skipiflinehigh IEC_PIN_ATN
         sbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA ; Data low if ATN is low
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+        si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    0b
 
         ;; Wait for 13us from clock high -> 104 cycles
         delay_cycles 104 + JIFFY_OFFSET_READ ; 104 + Offset
 
         ;; Read bit 5+4
-        in      r0, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r0       ; 1
 
         ;; Store bits in r24
         bst     r0, IEC_PIN_DATA  ; 1 - get data bit
@@ -259,7 +348,7 @@ jiffy_receive:
         delay_cycles 99         ; 99
 
         ;; Read bit 7+6
-        in      r0, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r0       ; 1
 
         ;; Store bits in r24
         bst     r0, IEC_PIN_DATA  ; 1 - get data bit
@@ -271,7 +360,7 @@ jiffy_receive:
         delay_cycles 83         ; 83
 
         ;; Read bit 1+3 [sic]
-        in      r0, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r0       ; 1
         bst     r0, IEC_PIN_DATA  ; 1 - get data bit
         bld     r24, 1            ; 1 - store as bit 1
         bst     r0, IEC_PIN_CLOCK ; 1 - get clock bit
@@ -281,7 +370,7 @@ jiffy_receive:
         delay_cycles 99         ; 99
 
         ;; Read Bit 0+2
-        in      r0, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r0       ; 1
         bst     r0, IEC_PIN_DATA  ; 1 - get data bit
         bld     r24, 0            ; 1 - store as bit 0
         bst     r0, IEC_PIN_CLOCK ; 1 - get clock bit
@@ -291,7 +380,7 @@ jiffy_receive:
         delay_cycles 99         ; 99
 
         ;; Read EOI mark
-        in      r19, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r19      ; 1
 
         ;; Wait 6us -> 48-1=47 cycles
         delay_cycles 47         ; 47
@@ -301,7 +390,11 @@ jiffy_receive:
         delay_cycles 10*8       ; make sure the C64 can see that
 
         ;; Post-process data and store last bus state
-        com     r24             ; invert received data (result)
+#ifndef IEC_INPUTS_INVERTED
+        com     r24             ; invert received data (result) if noninverted inputs
+#else
+        com     r19             ; If inverted inputs, data invert already done, bus invert for last bus state
+#endif
         st      Z, r19          ; store last bus state
         sei                     ; enable interrupts
         ret
@@ -346,11 +439,19 @@ jiffy_send:
         ;; The loop below will spin while ATN and Clock are high and
         ;; - Data is low  (single-byte transfer)
         ;; - Data is high (LOAD)
-        ldi     r21, IEC_BIT_CLOCK | IEC_BIT_ATN
+#ifndef IEC_INPUTS_INVERTED
+        ldi     r21, IEC_BIT_CLOCK | IEC_BIT_ATN      ;Noninverted inputs: CLK + ATN high, DAT low
+#else
+        ldi     r21, IEC_BIT_DATA                     ;Inverted inputs: CLK + ATN high, DAT low
+#endif
         tst     r20             ; loadflag set?
         breq    0f              ; Yes, skip
                 ; No: Set data bit
-        ori     r21, IEC_BIT_DATA
+#ifndef IEC_INPUTS_INVERTED
+        ori     r21, IEC_BIT_DATA                     ;Noninverted inputs: DAT high
+#else
+        andi    r21, ~IEC_BIT_DATA                    ;Inverted inputs, DAT high
+#endif
 
 0:      andi    r20, 0x7f       ; Clear bit 7 of loadflags
 
@@ -381,7 +482,7 @@ jiffy_send:
         com     r0              ; invert data byte
 
         ;; Wait for start condition (calculated above) from C64 - FFB8
-0:      in      r24, _SFR_IO_ADDR(IEC_INPUT)
+0:      si_readbusdirect r24
         andi    r24, IEC_BIT_CLOCK | IEC_BIT_DATA | IEC_BIT_ATN ; 1
         cp      r24, r21        ; 1
         breq    0b              ; 1
@@ -389,7 +490,11 @@ jiffy_send:
         ;; Check for ATN (J1541 doesn't do this, but I'm paranoid)
         ;; Doesn't work, further analysis required
         andi    r24, IEC_BIT_ATN ; 1
-        breq    js_finish        ; 1 - jump if ATN is low
+#ifndef IEC_INPUTS_INVERTED
+        breq    js_finish        ; 1 - jump if ATN is low, noninverted inputs
+#else
+        brne    js_finish        ; 1 - jump if ATN is low, inverted inputs
+#endif
 
         ;; Output the first bitpair 6us (48 cycles) after the start
         ;; 6us is the best-case time from bus check to transmission in J1541
@@ -426,14 +531,22 @@ jiffy_send:
 
         ;; Wait until data is low, check ATN [FFDE]
         ;; This loop won't wait when EOI is signalled.
-0:      in      r24, _SFR_IO_ADDR(IEC_INPUT) ; Read bus
-        sbrs    r24, IEC_PIN_ATN           ; Skip if ATN is high
+0:      si_readbusdirect r24               ; Read bus
+#ifndef IEC_INPUTS_INVERTED
+        sbrs    r24, IEC_PIN_ATN           ; Skip if ATN is high, noninverted inputs
+#else
+        sbrc    r24, IEC_PIN_ATN           ; Skip if ATN is high, inverted inputs
+#endif
         rjmp    js_finish                  ; ATN low, exit loop
-        sbrc    r24, IEC_PIN_DATA          ; Skip if Data is low
+#ifndef IEC_INPUTS_INVERTED
+        sbrc    r24, IEC_PIN_DATA          ; Skip if Data is low, noninverted inputs
+#else
+        sbrs    r24, IEC_PIN_DATA          ; Skip if Data is low, inverted inputs
+#endif
         rjmp    0b                         ; No Data, no ATN -> loop
 
 js_finish:
-        com     r24             ; invert port state (ATN low returns true)
+        si_invertregbits r24     ; invert port state (ATN low returns true)
         andi    r24, IEC_BIT_ATN ; single out ATN bit
 
         sei                     ; re-enable interrupts
@@ -451,7 +564,7 @@ js_finish:
         .global turbodisk_byte
 turbodisk_byte:
         ;; Wait until data is low
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+        si_skipiflinelow IEC_PIN_DATA
         rjmp    turbodisk_byte
 
         ;; Byte preparation
@@ -463,7 +576,7 @@ turbodisk_byte:
         out     _SFR_IO_ADDR(IEC_OUTPUT), r18
 
         ;; Wait until data is high
-0:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA ; 2
+0:      si_skipiflinehigh IEC_PIN_DATA ; 2
         rjmp    0b
 
         rcall   delay1us        ; Move the timing window slightly
@@ -508,7 +621,7 @@ tdbitloop:
         .global turbodisk_buffer
 turbodisk_buffer:
         ;; Wait until data is low
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+        si_skipiflinelow IEC_PIN_DATA
         rjmp    turbodisk_buffer
 
         ;; All bus lines high
@@ -519,7 +632,7 @@ turbodisk_buffer:
         movw    r30,r24         ; output pointer
 
         ;; Wait until data is high
-0:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA ; 2
+0:      si_skipiflinehigh IEC_PIN_DATA ; 2
         rjmp    0b
 
         ;; Initial delay of 4 us + move the timing window by 1 us for stability
@@ -611,7 +724,7 @@ send_bits_to_clk_data:
         ;;
 get_bits_from_clk_data:
         ; rcall                         ; 3
-        in      r19, _SFR_IO_ADDR(IEC_INPUT)  ; 1
+        si_readbusdirect r19            ; 1
         bst     r19, IEC_PIN_DATA       ; 1
         bld     r24, 0                  ; 1
         bst     r19, IEC_PIN_CLOCK      ; 1
@@ -633,15 +746,15 @@ get_bits_from_clk_data:
 clk_data_handshake:
         sbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_CLOCK
 1:
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+        si_skipiflinehigh IEC_PIN_ATN
         rjmp    2f
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+        si_skipiflinelow IEC_PIN_DATA
         rjmp    1b
         cbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_CLOCK
 1:
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+        si_skipiflinehigh IEC_PIN_ATN
         rjmp    2f
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+        si_skipiflinehigh IEC_PIN_DATA
         rjmp    1b
 2:
         ret
@@ -713,7 +826,7 @@ fc3_get_byte:
 
         ; wait until CLOCK goes high
 1:
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK ; 1/2?
+        si_skipiflinehigh IEC_PIN_CLOCK ; 1/2?
         rjmp    1b
 
         ; 17 us later...
@@ -748,8 +861,8 @@ fc3_get_byte:
         sbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA
 
         sei
-        com     r24     ; negate all bits
-        clr     r25     ; clear hi-byte of return val
+        si_invertregbits r24 ; negate all bits
+        clr     r25          ; clear hi-byte of return val
         ret
 
 
@@ -765,10 +878,10 @@ fc3_oldfreeze_pal_send:
         cbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA
 
         ;; wait for start signal (clock low->high)
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinelow IEC_PIN_CLOCK
         rjmp    1b
 
-2:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+2:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    2b
 
         ;; send bits 0+1
@@ -794,8 +907,8 @@ fc3_oldfreeze_pal_send:
         rcall   delay1us
 
         ;; return inverted ATN state in r24
-        in      r24, _SFR_IO_ADDR(IEC_INPUT)
-        com     r24
+        si_readbusdirect r24
+        si_invertregbits r24
         andi    r24, IEC_BIT_ATN
         sei
         ret
@@ -813,10 +926,10 @@ fc3_oldfreeze_ntsc_send:
         cbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA
 
         ;; wait for start signal (clock low->high)
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinelow IEC_PIN_CLOCK
         rjmp    1b
 
-2:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+2:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    2b
 
         ;; send bits 0+1
@@ -842,8 +955,8 @@ fc3_oldfreeze_ntsc_send:
         rcall   delay1us
 
         ;; return inverted ATN state in r24
-        in      r24, _SFR_IO_ADDR(IEC_INPUT)
-        com     r24
+        si_readbusdirect r24
+        si_invertregbits r24
         andi    r24, IEC_BIT_ATN
         sei
         ret
@@ -871,32 +984,31 @@ dreamload_get_byte:
 dl_bitloop:
         ; wait until clock goes low
 1:
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+        si_skipiflinelow IEC_PIN_CLOCK
         rjmp    1b
 
         lsl     r24
 
         ; read data a short time later
-        in      r19, _SFR_IO_ADDR(IEC_INPUT)
+        si_readbusdirect r19
         bst     r19, IEC_PIN_DATA
         bld     r24, 0
 
         ; wait until clock goes high
-2:
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+2:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    2b
 
         lsl     r24
 
         ; read data a short time later
-        in      r19, _SFR_IO_ADDR(IEC_INPUT)
+        si_readbusdirect r19
         bst     r19, IEC_PIN_DATA
         bld     r24, 0
 
         dec     r18
         brne     dl_bitloop
 
-        com     r24     ; negate all bits
+        si_invertregbits r24     ; negate all bits
         ret
 
         ;;
@@ -931,7 +1043,7 @@ dlgb_nibble:
         dec     r18
         brne    dlgb_nibble
 
-        com     r24     ; negate all bits
+        si_invertregbits r24 ; negate all bits
         ret
 
         ;;
@@ -972,7 +1084,7 @@ uload3_get_byte:
         ldi     r25, 0xff       ; prepare a negative return value
         clr     r24
         rcall   clk_data_handshake
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN ;skip ret if ATN is high
+        si_skipiflinehigh IEC_PIN_ATN ;skip ret if ATN is high
         rjmp    uload3_abort                       ;return if ATN is low
 
         ;; assuming an average of 10 cycles between DATA high and the following instruction
@@ -1003,7 +1115,7 @@ uload3_get_byte:
         delay_cycles 20*8       ; wait a bit so the C64 can return the bus to idle state
 
         clr     r25             ; clear upper byte of return value
-        com     r24             ; invert data byte
+        si_invertregbits r24    ; invert data byte
 
 uload3_abort:
         sei
@@ -1021,9 +1133,9 @@ uload3_send_byte:
         sbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA
 
         ;; wait for CLOCK low
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+1:      si_skipiflinehigh IEC_PIN_ATN
         rjmp    2f
-        sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+        si_skipiflinelow IEC_PIN_CLOCK
         rjmp    1b
 
         ;; DATA high
@@ -1031,9 +1143,9 @@ uload3_send_byte:
 
         ;; wait for CLOCK high - 2 to 7 cycles, assuming 5
 1:
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+        si_skipiflinehigh IEC_PIN_ATN
         rjmp    2f
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+        si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    1b
 
         ;; prepare transmission
@@ -1087,9 +1199,9 @@ epyxcart_send_byte:
         andi    r19, ~(IEC_OBIT_DATA|IEC_OBIT_CLOCK|IEC_OBIT_ATN|IEC_OBIT_SRQ)
 
         ;; wait for DATA high or ATN low
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_ATN
+1:      si_skipiflinehigh IEC_PIN_ATN
         rjmp    epyxcart_atnabort
-        sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+        si_skipiflinehigh IEC_PIN_DATA
         rjmp    1b
 
         mov     r0, r24             ; 1
@@ -1128,18 +1240,18 @@ geos_get_byte_common:
         clr     r24
 
         ;; wait until clock is high
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    1b
 
         ;; wait until clock is low
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK ; 1/2
+1:      si_skipiflinelow IEC_PIN_CLOCK ; 1/2
         rjmp    1b
 
         ;; delay
         delay_cycles 15*8 - 2
 
         ;; get bits 4 and 5
-        in      r19, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r19               ; 1
         bst     r19, IEC_PIN_CLOCK         ; 1
         bld     r24, 4-1                   ; 1 - r24 = ....4...
         bst     r19, IEC_PIN_DATA          ; 1
@@ -1149,7 +1261,7 @@ geos_get_byte_common:
         delay_cycles 14*8 - 5
 
         ;; get bits 6 and 7
-        in      r19, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r19               ; 1
         bst     r19, IEC_PIN_CLOCK         ; 1
         bld     r24, 6-1                   ; 1 - r24 = ..654...
         bst     r19, IEC_PIN_DATA          ; 1
@@ -1179,7 +1291,7 @@ geos_get_byte_1mhz:
 
         ;; post-process received value and return
         delay_cycles 11*8
-        com     r24             ; negate all bits
+        si_invertregbits r24    ; negate all bits
         clr     r25             ; clear high byte of return value
         ret
 
@@ -1206,7 +1318,7 @@ geos_get_byte_2mhz:
 
         ;;  post process received value and return
         delay_cycles 11*8
-        com     r24             ; negate all bits
+        si_invertregbits r24    ; negate all bits
         clr     r25             ; clear high byte of return value
         ret
 
@@ -1222,7 +1334,7 @@ geos_send_byte_common:
         rcall   delay1us
 
         ;; wait until CLOCK is low
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinelow IEC_PIN_CLOCK
         rjmp    1b
 
         ;; preserve non-IEC lines on IEC_OUTPUT port
@@ -1414,11 +1526,11 @@ wheels_get_byte_1mhz:
         clr     r24
 
         ;; wait until clock is high
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    1b
 
         ;; wait until clock is low
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK ; 1/2
+1:      si_skipiflinelow IEC_PIN_CLOCK ; 1/2
         rjmp    1b
 
         ;; delay
@@ -1449,7 +1561,7 @@ wheels_get_byte_1mhz:
         delay_cycles 20*8
 
         clr     r25             ; clear upper byte of return value
-        com     r24             ; invert data byte
+        si_invertregbits r24    ; invert data byte
 
         ret
 
@@ -1461,11 +1573,11 @@ wheels44_get_byte_1mhz:
         clr     r24
 
         ;; wait until clock is high
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    1b
 
         ;; wait until clock is low
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK ; 1/2
+1:      si_skipiflinelow IEC_PIN_CLOCK ; 1/2
         rjmp    1b
 
         ;; delay
@@ -1496,7 +1608,7 @@ wheels44_get_byte_1mhz:
         delay_cycles 20*8
 
         clr     r25             ; clear upper byte of return value
-        com     r24             ; invert data byte
+        si_invertregbits r24    ; invert data byte
 
         ret
 
@@ -1508,18 +1620,18 @@ wheels44_get_byte_2mhz:
         clr     r24
 
         ;; wait until clock is high
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    1b
 
         ;; wait until clock is low
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK ; 1/2
+1:      si_skipiflinelow IEC_PIN_CLOCK ; 1/2
         rjmp    1b
 
         ;; delay
         delay_cycles 15*8 - 2
 
         ;; get bits 0 and 1
-        in      r19, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r19               ; 1
         bst     r19, IEC_PIN_CLOCK         ; 1
         bld     r24, 0                     ; 1 - r24 = .......0
         bst     r19, IEC_PIN_DATA          ; 1
@@ -1529,7 +1641,7 @@ wheels44_get_byte_2mhz:
         delay_cycles 11*8 - 5
 
         ;; get bits 2 and 3
-        in      r19, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r19               ; 1
         bst     r19, IEC_PIN_CLOCK         ; 1
         bld     r24, 2                     ; 1 - r24 = .....210
         bst     r19, IEC_PIN_DATA          ; 1
@@ -1539,7 +1651,7 @@ wheels44_get_byte_2mhz:
         delay_cycles 11*8 - 5
 
         ;; get bits 4 and 5
-        in      r19, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r19               ; 1
         bst     r19, IEC_PIN_CLOCK         ; 1
         bld     r24, 4                     ; 1 - r24 = ...43210
         bst     r19, IEC_PIN_DATA          ; 1
@@ -1549,7 +1661,7 @@ wheels44_get_byte_2mhz:
         delay_cycles 11*8 - 5
 
         ;; get bits 6 and 7
-        in      r19, _SFR_IO_ADDR(IEC_INPUT) ; 1
+        si_readbusdirect r19               ; 1
         bst     r19, IEC_PIN_CLOCK         ; 1
         bld     r24, 6                     ; 1 - r24 = .6543210
         bst     r19, IEC_PIN_DATA          ; 1
@@ -1559,7 +1671,7 @@ wheels44_get_byte_2mhz:
         delay_cycles 12*8
 
         ;; post process received value and return
-        com     r24                  ; negate all bits
+        si_invertregbits r24         ; negate all bits
         clr     r25                  ; clear high byte of return value
         ret
 
@@ -1622,7 +1734,7 @@ ar6_1581_send_byte:
         cbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_CLOCK
 
         ;; wait until data is high
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+1:      si_skipiflinehigh IEC_PIN_DATA
         rjmp    1b
 
         ;; delay
@@ -1673,11 +1785,11 @@ ar6_1581p_get_byte:
         cbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_CLOCK
 
         ;; wait until data is low
-1:      sbic    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+1:      si_skipiflinelow IEC_PIN_DATA
         rjmp    1b
 
         ;; wait until data is high
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_DATA
+1:      si_skipiflinehigh IEC_PIN_DATA
         rjmp    1b
 
         ;; delay
@@ -1716,7 +1828,7 @@ ar6_1581p_get_byte:
 
         ;; post-processing
         sei
-        com     r24
+        si_invertregbits r24
         clr     r25
         ret
 #endif
@@ -1759,6 +1871,9 @@ parallel_send_handshake:
         sbi     _SFR_IO_ADDR(PARALLEL_HDDR), PARALLEL_HSK_OUT_BIT  ; set pin to output
         call    delay1us                                           ; delay
         call    delay1us
+        ;; void parallel_sethiz_handshake(void)
+        .global parallel_sethiz_handshake
+parallel_sethiz_handshake:
         cbi     _SFR_IO_ADDR(PARALLEL_HDDR), PARALLEL_HSK_OUT_BIT  ; set pin to input
         sbi     _SFR_IO_ADDR(PARALLEL_HPORT), PARALLEL_HSK_OUT_BIT ; enable pullup
         ret
@@ -1783,7 +1898,7 @@ n0sdos_send_byte:
         cbi     _SFR_IO_ADDR(IEC_OUTPUT), IEC_OPIN_DATA
 
         ;; wait until clock is high
-1:      sbis    _SFR_IO_ADDR(IEC_INPUT), IEC_PIN_CLOCK
+1:      si_skipiflinehigh IEC_PIN_CLOCK
         rjmp    1b
 
         ;; delay
@@ -1824,4 +1939,120 @@ n0sdos_send_byte:
 
 #endif
 
+        ;; ====================
+        ;; Fast serial routines
+        ;; ====================
+#if CONFIG_FASTSERIAL_MODE >= 1
+        ;; ATN + SRQ Interrupt vector is only same, when PCI is used!
+  #ifdef IEC_SRQATN_VECT_SHARED
+        ;; Fast serial receiver enable, registers no changed (called from anywhere):
+        ;; void fastser_recven(void);
+        .global fastser_recven
+fastser_recven:
+        push    r24
+        ldi     r24, 0x01
+        out     _SFR_IO_ADDR(fastsershreg), r24                 ;Receiver shiftreg init
+        cbi     _SFR_IO_ADDR(globalflags), FASTSER_RECVRDY_BIT  ;Clear Rcvd. flag
+        lds     r24, IEC_PCMSK
+        ori     r24, (1<<IEC_PIN_SRQ)
+        sbi     _SFR_IO_ADDR(globalflags), FASTSER_RECVEN_BIT
+        sts     IEC_PCMSK, r24
+        pop     r24
+        ret
+
+        ;; Fast serial receiver disable, registers no changed (called from anywhere):
+        ;; void fastser_recvdis(void);
+        .global fastser_recvdis
+fastser_recvdis:
+        push    r24
+        lds     r24, IEC_PCMSK
+        andi    r24, ~(1<<IEC_PIN_SRQ)
+        cbi     _SFR_IO_ADDR(globalflags), FASTSER_RECVEN_BIT
+        sts     IEC_PCMSK, r24
+        pop     r24
+        ret
+
+        ;; Fast serial BYTE sender:
+        ;; void fastser_sendbyte(uint8_t byte);
+        .global fastser_sendbyte
+fastser_sendbyte:
+        mov     r0, r24                                 ;1      R0 = BYTE to be send
+        in      r1, _SFR_IO_ADDR(SREG)                  ;1
+        cli                                             ;1      Disable interrupts
+        push    r25                                     ;2
+        lds     r24, IEC_PCMSK                          ;2
+        push    r24                                     ;2
+        andi    r24, ~(1<<IEC_PIN_SRQ)                  ;1
+        sts     IEC_PCMSK, r24                          ;2
+
+        ldi     r24, 8                                  ;1      (13 clk) 8 bit will be send
+
+        ;; Send cycle
+1:
+    #ifndef IEC_SEPARATE_OUT
+        cbi     _SFR_IO_ADDR(IEC_PORT),IEC_PIN_SRQ      ;2      SRQ pullup off (Don't drive SRQ to high!)
+    #else
+        rjmp    0f                                      ;2
+0:
+    #endif
+        in      r25, _SFR_IO_ADDR(IEC_OUTPUT)           ;1      Output port
+    #ifdef IEC_OUTPUTS_INVERTED
+        ori     r25, ((1<<IEC_OPIN_SRQ)|(1<<IEC_OPIN_DATA))  ;1 SRQ and DAT pull low
+        sbrc    r0, 7                                   ;1/2    SKIP, if requested bit 0
+        andi    r25, ~(1<<IEC_OPIN_DATA)                ;1      If the requested bit 1, release DAT line
+    #else
+        andi    r25, ~((1<<IEC_OPIN_SRQ)|(1<<IEC_OPIN_DATA)) ;1 SRQ and DAT pull low
+        sbrc    r0, 7                                   ;1/2    SKIP, if requested bit 0
+        ori     r25, (1<<IEC_OPIN_DATA)                 ;1      If the requested bit 1, release DAT line
+    #endif
+        out     _SFR_IO_ADDR(IEC_OUTPUT), r25           ;1      (23 clk) SRQ pulled low, DAT set
+
+        push    r24                                     ;2
+        ldi     r24, 0x01                               ;1
+        out     _SFR_IO_ADDR(fastsershreg), r24         ;1      Receiver shiftreg init
+        cbi     _SFR_IO_ADDR(globalflags), FASTSER_RECVRDY_BIT ;2       Clear Rcvd. flag
+        nop                                             ;1
+        ldi     r24, (1<<IEC_OPIN_SRQ)                  ;1
+        eor     r25, r24                                ;1      ;SRQ pin switch back
+        pop     r24                                     ;2
+        out     _SFR_IO_ADDR(IEC_OUTPUT), r25           ;1      (12 clk) SRQ released, DAT held in last state
+
+    #ifndef IEC_SEPARATE_OUT
+        sbi     _SFR_IO_ADDR(IEC_PORT),IEC_PIN_SRQ      ;2      SRQ pullup on
+    #else
+        rjmp    0f                                      ;2
+0:
+    #endif
+        nop                                             ;1
+        jmp     0f                                      ;2
+0:      rcall   2f                                      ;3+4=7
+        lsl     r0                                      ;1      Sent bit shifted out
+        dec     r24                                     ;1
+        brne    1b                                      ;1/2
+        ;; Send cycle end
+
+        pop     r24                                     ;2
+        sts     IEC_PCMSK, r24                          ;2
+        pop     r25                                     ;2
+        out     _SFR_IO_ADDR(SREG), r1                  ;1      Restore I flag
+        clr     r1                                      ;1      Restore zero
+2:      ret                                             ;4      (12 clk... 3(call)+13(intro)+279(cycle)+12(outro)=307 clk cycle)
+
+    #if CONFIG_FASTSERIAL_MODE >= 2
+        ;; Fast serial BYTE receiver:
+        ;; int16_t fastser_recvbyte(void);
+        .global    fastser_recvbyte
+fastser_recvbyte:
+        ldi     r24, 0xff                                       ;1
+        ldi     r25, 0xff                                       ;1      -1
+        sbis    _SFR_IO_ADDR(globalflags), FASTSER_RECVRDY_BIT  ;1/2    SKIP if received BYTE ready
+        ret                                                     ;4
+        in      r24, _SFR_IO_ADDR(fastserrecvb)                 ;1
+        cbi     _SFR_IO_ADDR(globalflags), FASTSER_RECVRDY_BIT  ;2      Clear "Recv." flag
+        clr     r25                                             ;1      r25:r24 = received BYTE
+        ret
+    #endif
+
+  #endif    // ATN+SRQ vector same
+#endif      // Fast serial
         .end

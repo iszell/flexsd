@@ -5,7 +5,7 @@
 
    FAT filesystem access based on code from ChaN and Jim Brain, see ff.c|h.
 
-   Virtual 6502 CPU (VCPU) emulation by balagesz, (C) 2021
+   Virtual 6502 CPU (VCPU) emulation by balagesz, (C) 2021+
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -26,8 +26,18 @@
 */
 
 #include "config.h"
+#ifndef __AVR__
+#  include "flags.h"
+#  include "arch-timer.h"
+#endif
 
 #ifdef CONFIG_VCPUSUPPORT
+
+#ifdef CONFIG_VCPUFORCEVERSION
+  #define VCPU_VERSION CONFIG_VCPUFORCEVERSION
+#else
+  #define VCPU_VERSION 0x02
+#endif
 
 #define VCPU_ERROR_ALIGN 0x80
 #define VCPU_ERROR_ADDRESS 0x40
@@ -57,7 +67,6 @@
 
 #define PARAMPOS 96
 
-#define VCPU_VERSION 0x01
 #define VCPU_INTERFACE_IEEE 1
 #define VCPU_INTERFACE_CBMSER 2
 #define VCPU_INTERFACE_CBMFASTSER 3
@@ -70,16 +79,44 @@
 #endif
 #ifdef CONFIG_HAVE_IEC
   #define VCPU_BUSTYPE VCPU_INTERFACE_CBMSER
+  /* Reported bus type */
+  #ifndef HAVE_PARALLEL       // No parallel port
+    #if CONFIG_FASTSERIAL_MODE < 1
+      #define VCPU_BUSTYPE_REP VCPU_INTERFACE_CBMSER
+    #else
+      #define VCPU_BUSTYPE_REP VCPU_INTERFACE_CBMFASTSER
+    #endif
+  #else                       // Have a parallel port
+    #if CONFIG_FASTSERIAL_MODE < 1
+      #define VCPU_BUSTYPE_REP VCPU_INTERFACE_CBMSERPAR
+    #else
+      #define VCPU_BUSTYPE_REP VCPU_INTERFACE_CBMFASTSERPAR
+    #endif
+  #endif
 #endif
 
-// For enable SRQ handle, define this:
-// WARNING: not ready!
-//#define SRQHANDLE
+#if VCPU_VERSION >= 2
+// SRQ line manual switch with I/O registers, if defined:
+  #define SRQHANDLE
+#endif
+
+#define VCPU_LINEDIAG
 
 // For enable debug functions, define this:
 //#define VCPUDEBUG_EN
 
 #ifndef __ASSEMBLER__       /* !ASSEMBLER */
+
+/* VCPU run flag set/reset on non-AVR targets (On AVR targets: defined by arch-config.h) */
+#ifndef __AVR__
+extern volatile uint8_t vcpurun;
+static inline __attribute__((always_inline)) void set_vcpurunflag(uint8_t state) {
+  if (state)
+    vcpurun = VCPU_RUN_FLAG_MSK;
+  else
+    vcpurun = 0x00;
+}
+#endif
 
 typedef struct {
   uint16_t crc;
@@ -101,6 +138,11 @@ typedef struct {
   uint8_t interrupt;
   volatile uint8_t reqfunction;
   uint8_t lastopcode;
+#if VCPU_VERSION >= 2
+  uint16_t rr;
+  uint16_t u1r;
+  uint16_t u2r;
+#endif
 } Tcpureg;
 
 extern Tcpureg vcpuregs;
@@ -108,6 +150,9 @@ extern Tploaderdatas plparams;
 extern volatile uint8_t emucalled;
 extern volatile uint8_t interruptcode;
 extern uint8_t b2decimal[3];
+#ifndef __AVR__
+extern volatile uint8_t timedelay;
+#endif
 
 void vcpu6502emu(void);
 void vcpu6502core(void);
@@ -125,10 +170,11 @@ void vcpu6502core(void);
 #define vcpureg_interrupt vcpuregs+9
 #define vcpureg_reqfunction vcpuregs+10
 #define vcpureg_lastopcode vcpuregs+11
-
-#define VCPU_ADDR_COMMANDBUFFER 0xfc00
-#define VCPU_ADDR_ERRORBUFFER 0xfd00
-#define VCPU_ADDR_IO 0xfe00
+#if VCPU_VERSION >= 2
+  #define vcpureg_usrret vcpuregs+12
+  #define vcpureg_usr1 vcpuregs+14
+  #define vcpureg_usr2 vcpuregs+16
+#endif
 
 .extern device_address;
 .extern bufferdata;
@@ -137,9 +183,33 @@ void vcpu6502core(void);
 .extern vcpuregs;
 .extern interruptcode;
 
+#if CONFIG_FASTSERIAL_MODE >= 1
+  #ifdef __AVR__
+    #define fastsershreg (GPIOR1)
+    #define fastserrecvb (GPIOR2)
+  #endif
+#endif
+
 #endif        /* ASSEMBLER */
 
-#define VCPU_MAXIO_ADDRBITS 4
-#define VCPU_MAXIO_MASK ((1<<VCPU_MAXIO_ADDRBITS)-1)
+#define VCPU_ADDR_COMMANDBUFFER 0xfc00
+#define VCPU_ADDR_ERRORBUFFER 0xfd00
+#define VCPU_ADDR_IO 0xfe00
+
+#if VCPU_VERSION == 1
+  #define VCPU_MAXIO_ADDRBITS 4
+  #define VCPU_MAXIO_SIZE 16
+#endif
+#if VCPU_VERSION == 2
+  #ifndef HAVE_PARALLEL       // No parallel port
+    #define VCPU_MAXIO_ADDRBITS 4
+    #define VCPU_MAXIO_SIZE 16
+  #else
+    #define VCPU_MAXIO_ADDRBITS 5
+    #define VCPU_MAXIO_SIZE 18
+  #endif
+#else
+  #error "VCPU_VERSION value error!"
+#endif
 
 #endif

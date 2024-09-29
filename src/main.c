@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -83,6 +83,9 @@ int main(void) {
   bus_init();    // needs delay
   rtc_init();    // accesses I2C
   disk_init();   // accesses card
+
+  while ((ticks&0xff) == 0) {}    // Wait one interrupt (buttons state read)
+
   read_configuration();
 
   filesystem_init(0);
@@ -108,8 +111,10 @@ int main(void) {
 
 #if defined(HAVE_SD) && BUTTON_PREV != 0
   /* card switch diagnostic aid - hold down PREV button to use */
-  if (!(buttons_read() & BUTTON_PREV)) {
-    while (buttons_read() & BUTTON_NEXT) {
+  //if (!(buttons_read() & BUTTON_PREV)) {
+  //  while (buttons_read() & BUTTON_NEXT) {
+  if (!(buttonstate & BUTTON_PREV)) {
+    while (buttonstate & BUTTON_NEXT) {
       set_dirty_led(sdcard_detect());
 # ifndef SINGLE_LED
       set_busy_led(sdcard_wp());

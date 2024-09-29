@@ -1,0 +1,149 @@
+----------------------------------------------------------------------
+Flexible SD drive firmware (FlexSD fw) changelog
+----------------------------------------------------------------------
+1.3.0-fspp0		2024-09-24
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 13.2, Binutils 2.41, AVR-Libc 2.0.0
+		    ARM-GCC 13.2, Binutils 2.41, NewLib 4.3.0
+	* Binaries for 9 types of hardware
+  Add preliminary KERNAL-level fast serial support for most targets
+    (128K+ device ROM required) (New!)
+  Add preliminary new hardware: FlexSD Drive (V1) (New!)
+  DolphinDOS/parallel port handling is switchable (XP+/XP-)
+  "iec-bus.h": inverting inputs / serial bus handled in AVR targets
+  "avr/fastloader-ll.S": inverting inputs / serial bus handled
+  "avr/vcpu6502core.S": serial bus inputs handled by macros (the
+    previous #IF/#ELSE/#ENDIF chaos has been reduced a little),
+    cosmetical change
+  "vcpu6502emu.c": moving "free_multiple_buffers()" calls before the
+    VCPU error settings: error channel is preserved after real channel
+    close
+----------------------------------------------------------------------
+1.2.0-rc1		2024-03-26
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 13.2, Binutils 2.41, AVR-Libc 2.0.0
+		    ARM-GCC 13.2, Binutils 2.41, NewLib 4.3.0
+	* Binaries for 9 types of hardware
+  "avr/arch-config.h": Dedicated "VCPU indicator LED" corrected (unused
+    actual AVR targets, previous definition bugous)
+
+1.2.0-d40trk-beta3	2024-03-11
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 13.2, Binutils 2.41, AVR-Libc 2.0.0
+		    ARM-GCC 13.2, Binutils 2.41, NewLib 4.3.0
+	* Binaries for 9 types of hardware
+  "iec.c"+"ieee.c" / "xxx_talk_handler()": remove exit on error channel
+    handling, bugfix is made by a differental way
+  "iec.c" / "iec_talk_handler()": Add delay to the end of the sending
+    loop if there is an EOI (replaces the previous patch)
+  "avr/vcpu6502core.S" / vcpu6502emu.c": Moving the "fastser_recvdis()"
+    calls to a more logical location
+
+1.2.0-d40trk-beta2	2024-02-10
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 13.2, Binutils 2.41, AVR-Libc 2.0.0
+		    ARM-GCC 13.2, Binutils 2.41, NewLib 4.3.0
+	* Binaries for 9 types of hardware
+  "avr/arch-config.h": All "SDx_CHANGE_HANDLER" restored to blocking
+    ISRs as it was originally (for this reason, card change may cause
+    fast serial data errors, but it is a reasonable compromise)
+  "timer.c" / "SYSTEM_TICK_HANDLER()": Add a simple lock to prevent
+    re-entrant call
+
+1.2.0-d40trk-beta1	2024-01-21
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 13.2, Binutils 2.41, AVR-Libc 2.0.0
+		    ARM-GCC 13.2, Binutils 2.41, NewLib 4.3.0
+	* Binaries for 9 types of hardware
+  Preliminary Fast serial support for VCPU, usable for most targets
+    (uIEC not supported, others yes)
+  Reported bus type: CBMFASTSER ("ZI" command, "version" I/O value) on
+    supported targets
+  "fatops.c" / "fat_file_seek()": returned buffer position now correct
+    for non-default block-size settings (VCPU only)
+  "vcpu6502emu.c" / "return_parameters()": EOI state always $00/$FF
+    instead of $00/not $00
+  "vcpu6502emu.c" / SYSCALL_CHANGEDISK: Mount return error, if line not
+    found
+  "doscmd.c" / "parse_zcommands()": "ZW" return error, if no data
+  "vcpu6502core.c" optimised
+
+1.2.0-d40trk-alpha3	2023-12-15
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 13.2, Binutils 2.41, AVR-Libc 2.0.0
+		    ARM-GCC 13.2, Binutils 2.41, NewLib 4.3.0
+	* Binaries for 9 types of hardware
+  Added "lpc17xx/vcpu6502core.c": VCPU core "C" implementation for
+    "more-than-8-bit" targets; ARM2IEC preliminary support
+  "iec.c" / "iec_talk_handler()": add exit on error channel handling
+  "ieee.c" / "ieee_talk_handler()": add exit on error channel handling
+  "vcpu6502emu.c": add small wait before starting VCPU (host's KERNAL
+    should be finished "unlisten" addressing in this time)
+
+1.2.0-d40trk-alpha2	2023-10-08
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 13.2, Binutils 2.41, AVR-Libc 2.0.0
+	* Binaries for 8 types of hardware
+	Compiler changed
+	Disable UART_DEBUG for all used targets
+	Rewrite time_after(a,b) macro for better compiler
+	  compatibility (the original is incorrectly compiled by
+	  newer compilers)
+	Add 40 tracks .D64 support (Sector-level R/W, DOS Read, 
+	  Write DolphinDOS-style 40 tracks images)
+	VCPU core:
+	  Some code optimizations
+	  Remove UTEST instruction (replaced by peripheral)
+	  Add R2 version (preliminary), add 3 + 1 (8) new
+	    instructions (USER1, USER2, USERR, CONFG (8 subcommands))
+----------------------------------------------------------------------
+1.1.0-rc3		2023-06-10
+	* Based on sd2iec-1.0.0atentdead0-36-g7e7be29
+	* Compiled: AVR-GCC 10.2, Binutils 2.35, AVR-Libc 2.0.0
+	* Binaries for 8 types of hardware
+	Merge from upstream updates
+	VCPU core: Add I/O address check (No I/O duplication anymore)
+
+1.1.0-rc2		2023-03-19
+	* Based on sd2iec-1.0.0atentdead0-29-gb8572fe
+	* Compiled: AVR-GCC 10.2, Binutils 2.35, AVR-Libc 2.0.0
+	* Binaries for 8 types of hardware
+	"Communication interface" numbers changed
+	VCPU: I/O size parameter add to "ZI" response
+	VCPU core:
+	  Remove BTASC instruction
+	  Add Bin-to-decimal peripheral
+	  PHA + PLA instructions optimized (fixed execution time)
+	  Added external display button to HID I/O register
+	  Added device address switch bits to devaddress input register
+	  I/O layout modified (Not very used registers relocated)
+
+1.1.0-rc1		2022-08-10
+	* Based on sd2iec-1.0.0atentdead0-29-gb8572fe
+	* Compiled: AVR-GCC 10.2, Binutils 2.35, AVR-Libc 2.0.0
+	* Binaries for 8 types of hardware
+	Compiler changed
+
+1.1.0-beta6		2021-11-20
+	* Based on sd2iec-1.0.0atentdead0-29-gb8572fe
+	* Compiled: AVR-GCC 9.2 (maybe)
+	* Binaries for 8 types of hardware
+	VCPU core: added ULBIT instruction
+
+1.1.0-beta5		2021-11-10
+	* Based on sd2iec-1.0.0atentdead0-29-gb8572fe
+	* Compiled: AVR-GCC 9.2 (maybe)
+	* Binaries for 8 types of hardware
+
+1.1.0-beta4		2021-11-07
+	* Based on sd2iec-1.0.0atentdead0-29-gb8572fe
+	* Compiled: AVR-GCC 9.2 (maybe)
+	* Binaries for 8 types of hardware
+	Merge from upstream updates
+
+1.1.0-beta3		2021-09-11
+	* Based on sd2iec-1.0.0atentdead0-24-ga9a09fa (maybe)
+	* Compiled: AVR-GCC 9.2 (maybe)
+	* Binaries for LarsP-644, LarsP-1284, SW2-1284
+	VCPU first introduction, no source released yet
+----------------------------------------------------------------------

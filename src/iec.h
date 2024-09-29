@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -55,6 +55,18 @@
 #  define DOLPHIN_ACTIVE 0
 #endif
 
+
+#if ((CONFIG_FASTSERIAL_MODE >= 2) || defined(HAVE_PARALLEL))
+extern uint8_t xbusen_config;
+extern uint8_t xbusenflags;
+#endif
+#if CONFIG_FASTSERIAL_MODE >= 2
+#  define FASTSER_ACTIVE (1<<5)
+extern iec_bus_t fastsr;
+#else
+#  define FASTSER_ACTIVE 0
+#endif
+
 typedef struct {
   uint8_t iecflags;
   enum { BUS_IDLE = 0, BUS_ATNACTIVE, BUS_FOUNDATN, BUS_FORME, BUS_NOTFORME, BUS_ATNFINISH, BUS_ATNPROCESS, BUS_CLEANUP, BUS_SLEEP } bus_state;
@@ -63,6 +75,23 @@ typedef struct {
 } iec_data_t;
 
 extern iec_data_t iec_data;
+
+#if CONFIG_FASTSERIAL_MODE >= 1
+/* Fast serial stuffs, variables defined in iec.c */
+/* AVR uses GPIOR1/2 for these */
+#  ifndef __AVR__
+extern uint8_t fastsershreg;
+extern volatile uint8_t fastserrecvb;
+#  endif
+#endif
+
+void fastser_configure(void);
+extern iec_bus_t clklinesave;
+static inline void burst_init(void) {
+  clklinesave = IEC_BIT_CLOCK;      // $8056 set CLK save state to default
+}
+uint8_t burst_handsk(uint8_t value);
+uint8_t burst_sendblock(uint8_t *ptr, uint8_t len);
 
 uint8_t iec_check_atn(void);
 void iec_init(void);

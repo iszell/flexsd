@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -73,8 +73,8 @@
 #define uart_puts_p(__s) uart_puts_P(PSTR(__s))
 #define EOI_RECVD       (1<<0)
 #define COMMAND_RECVD   (1<<1)
-#define ATN_POLLED      -3      // 0xfd
-#define TIMEOUT_ABORT   -4      // 0xfc
+#define ATN_POLLED      (uint8_t)-3      // 0xfd
+#define TIMEOUT_ABORT   (uint8_t)-4      // 0xfc
 
 /* ------------------------------------------------------------------------- */
 /*  Global variables                                                         */
@@ -189,7 +189,7 @@ static inline void set_eoi_state(uint8_t x)
     IEEE_DDR_EOI |= _BV(IEEE_PIN_EOI);              // EOI as output
   }
 
-  static void inline ieee_bus_idle (void)
+  static inline void ieee_bus_idle (void)
   {
     ieee_ports_listen();
     set_ndac_state(1);
@@ -526,6 +526,10 @@ static uint8_t ieee_talk_handler (void)
     if (buf->refill(buf)) {
       return -1;
     }
+
+    /* Maybe this bug(?)fix would be good here, but not tested / not checked: / balagesz */
+    //if (ieee_data.secondary_address == 0x0f) return 0;      // BUGfix: if error channel is handled, talk handler is ready
+    /* 240309: This bug(?)fix was (temporary?) removed, see "iec.c"/"iec_talk_handler()" for details. */
 
     /* Search the buffer again, it can change when using large buffers */
     buf = find_buffer(ieee_data.secondary_address);

@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -24,11 +24,14 @@
 */
 
 #include "config.h"
-#include <arm/NXP/LPC17xx/LPC17xx.h>
-#include <arm/bits.h>
+#include "bitband.h"
 #include "fastloader.h"
 #include "iec-bus.h"
+#include "flags.h"
+#include "arch-timer.h"
+#include "iec.h"
 #include "llfl-common.h"
+#include "vcpu6502emu.h"
 
 #ifdef IEC_OUTPUTS_INVERTED
 #  define EMR_LOW  2
@@ -40,6 +43,16 @@
 
 uint32_t llfl_reference_time;
 static uint32_t timer_a_ccr, timer_b_ccr;
+
+/**
+ * Fast serial flags for non-AVR targets
+ * On ARM targets, "globalstatus" is handled in non-atomic mode.
+ * It's easier if it is replaced by an external flag-bytes.
+ */
+#if CONFIG_FASTSERIAL_MODE >= 1
+volatile uint8_t fastserrecven_flag = 0x00;
+volatile uint8_t fastserrecvrdy_flag = 0x00;
+#endif
 
 /* ---------- utility functions ---------- */
 
@@ -340,3 +353,102 @@ uint8_t llfl_generic_save_2bit(const generic_2bit_t *def) {
 
   return result ^ def->eorvalue;
 }
+
+/***********************************
+ * Low-level Fast serial routines: *
+ ***********************************/
+#if CONFIG_FASTSERIAL_MODE >= 1
+
+/**
+ * fastser_recven - Enable fast serial receiver
+ */
+void fastser_recven(void) {
+  fastserrecvrdy_flag = 0x00;
+  fastsershreg = 0x01;
+  fastserrecven_flag = FASTSER_RECVEN_MSK;
+  set_srq_irq(1);
+}
+
+/**
+ * fastser_recvdis - Disable fast serial receiver
+ */
+void fastser_recvdis(void) {
+  set_srq_irq(0);
+  fastserrecven_flag = 0x00;
+}
+
+/**
+ * fastser_sendbyte_vcpu - Send BYTE at fast serial lines: SRQ + DAT, VCPU timing
+ */
+void fastser_sendbyte_vcpu(uint8_t byte) {
+  int a;
+  uint8_t f = fastserrecven_flag;     // Save fast serial enable state
+  fastser_recvdis();
+//  for (a = 0; a < 8; a++) {
+//    vcputimer_waitnext05t();
+//    if (byte&0x80) set_data(1); else set_data(0);
+//    set_srq(0);
+//    vcputimer_waitnext05t();
+//    vcputimer_waitnext05t();
+//    vcputimer_waitnext05t();
+//    set_srq(1);
+//    vcputimer_waitnext05t();
+//    byte <<= 1;
+//    vcputimer_waitnext05t();
+//    vcputimer_waitnext05t();
+//    vcputimer_waitnext05t();
+//    vcputimer_waitnext05t();
+//  }
+  vcputick_t tm = vcputimer_getvalue() + 2;
+  for (a = 0; a < 8; a++) {
+    vcputimer_waitthistick(tm);
+    if (byte&0x80) set_data(1); else set_data(0);
+    set_srq(0);
+    tm += 3;
+    vcputimer_waitthistick(tm);
+    set_srq(1);
+    byte <<= 1;
+    tm += 6;
+  }
+  vcputimer_waitthistick(tm);
+  if (f) fastser_recven();          // Restore fast serial enable state
+}
+
+/**
+ * iec_srq_handler - receive BYTE from fast serial lines: SRQ + DAT
+ * Called from interrupt (SRQ rising edge)
+ */
+void iec_srq_handler(void) {
+  uint16_t rd = fastsershreg<<1;
+  if (iec_bus_read()&IEC_BIT_DATA) rd |= 0x0001;
+  if (rd&0x0100) {
+    fastserrecvb = rd&0xff;
+    fastsershreg = 0x01;
+    fastserrecvrdy_flag = FASTSER_RECVRDY_MSK;
+  } else {
+    fastsershreg = rd&0xff;
+  }
+  timedelay = 1;          // Slow down no problem
+}
+
+  #if CONFIG_FASTSERIAL_MODE >= 2
+/**
+ * fastser_sendbyte - Send BYTE at fast serial lines: SRQ + DAT, called from anywhere
+ */
+void fastser_sendbyte(uint8_t byte) {
+  vcputimer_clear();                // Restart VCPU tick timer
+  fastser_sendbyte_vcpu(byte);      // Send BYTE
+}
+
+/**
+ * fastser_recvbyte - Return received byte, if ready, else return -1.
+ */
+int16_t fastser_recvbyte(void) {
+  if (!fastserrecvrdy_flag) return -1;
+  uint16_t d = fastserrecvb;
+  fastserrecvrdy_flag = 0;
+  return d;
+}
+  #endif
+
+#endif

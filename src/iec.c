@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -52,7 +52,9 @@
 #include "timer.h"
 #include "uart.h"
 #include "iec.h"
-#include "vcpu6502emu.h"
+#ifdef CONFIG_VCPUSUPPORT
+  #include "vcpu6502emu.h"
+#endif
 
 /* ------------------------------------------------------------------------- */
 /*  Global variables                                                         */
@@ -62,6 +64,23 @@
 uint8_t device_address;
 
 iec_data_t iec_data;
+
+#if CONFIG_FASTSERIAL_MODE >= 1
+/* Fast serial stuffs */
+/* AVR uses GPIOR1/2 for these */
+#  ifndef __AVR__
+uint8_t fastsershreg;
+volatile uint8_t fastserrecvb;
+#  endif
+#endif
+
+#if ((CONFIG_FASTSERIAL_MODE >= 2) || defined(HAVE_PARALLEL))
+uint8_t xbusen_config;
+uint8_t xbusenflags;
+#endif
+#if CONFIG_FASTSERIAL_MODE >= 2
+iec_bus_t clklinesave;
+#endif
 
 /* ------------------------------------------------------------------------- */
 /*  Very low-level bus handling                                              */
@@ -212,7 +231,6 @@ static int16_t iec_getc(void) {
   return val;
 }
 
-
 /**
  * iec_putc - send a byte over the serial bus (E916)
  * @data    : byte to be sent
@@ -305,6 +323,217 @@ static uint8_t iec_putc(uint8_t data, const uint8_t with_eoi) {
 }
 
 
+#if CONFIG_FASTSERIAL_MODE >= 2
+/**
+  * Enable / Disable Fast Serial (receiver):
+  */
+void fastser_configure(void) {
+  if ((xbusen_config & 0x03) == 0x01)
+    xbusenflags |= 0x80;
+  else if ((xbusen_config & 0x03) == 0x00)
+    xbusenflags &= ~0x80;
+  if (xbusenflags & 0x80)
+    fastser_recven();       // Enable Fast Serial receiver
+  else
+    fastser_recvdis();      // Disable Fast Serial receiver
+  (void)fastser_recvbyte(); // Clear receiver ready flag
+}
+
+/**
+ * _iec_getc_fs - receive one byte from the CBM fast serial bus
+ *   It also handles slow serial reception, because the machine sends
+ *   EOI data using a slow protocol
+ *
+ * This function tries receives one byte from the serial bus and returns it
+ * if successful. Returns -1 instead if the device state has changed, the
+ * caller should return to the main loop immediately in that case.
+ */
+static int16_t _iec_getc_fs(void) {
+  uint8_t val, i;
+  int16_t fsval;
+  iec_bus_t tmp;
+
+  val = 0;
+
+  do {                                                  // $82CE..$82D7
+    if (iec_check_atn()) return -1;
+  } while (!(iec_debounced() & IEC_BIT_CLOCK));         // Wait for CLK high
+
+  fsval = fastser_recvbyte();                           // $82C7 Clear receiver flag
+
+  set_data(1);                                          // $82D8 CLK released by host, DAT released
+  /* Wait until all other devices released the data line    */
+  while (!IEC_DATA) ;                                   // $82DB..$82E1
+
+  /* Timer for EOI detection */
+  start_timeout(256);                                   // $82E2 (ptch59: $AA76)
+
+  do {
+    if (iec_check_atn()) return -1;                     // $82E5
+    tmp = has_timed_out();                              // $82E8
+  } while ((iec_debounced() & IEC_BIT_CLOCK) && !tmp);  // $82EF: wait for CLK low or timeout
+
+  /* See if timeout happened -> EOI */
+  if (tmp) {
+    set_data(0);                                        // $82F8
+    delay_us(73);                                       // $82FB..$82FF: delay calculated from all (60uSec+others)
+    set_data(1);                                        //               instructions between IO accesses
+
+    do {
+      if (iec_check_atn()) return -1;                   // $8303..$830C: wait for CLK low
+    } while (iec_debounced() & IEC_BIT_CLOCK);
+
+    iec_data.iecflags|=EOI_RECVD;                       // $830D
+  }
+  /* Slow serial receiver: */
+  for (i=0;i<8;i++) {
+    /* Capture data on rising edge */
+    do {                                                // $8311..
+      fsval = fastser_recvbyte();                       // $8316
+      if (fsval >= 0) {
+        val = fsval & 0xff;
+        goto fastrecvrdy;
+      }
+      tmp = iec_bus_read();
+    } while (!(tmp & IEC_BIT_CLOCK));
+
+    val = (val >> 1) | (!!(tmp & IEC_BIT_DATA) << 7);   // $832C
+
+    do {                                                // $832E..
+      if (iec_check_atn()) return -1;
+    } while (iec_debounced() & IEC_BIT_CLOCK);
+  }
+
+  fastrecvrdy:
+
+  delay_us(5);        // Test
+  set_data(0);
+  delay_us(50);       /* Slow down a little bit, may or may not fix some problems */
+  return val;
+}
+
+/**
+ * iec_getc_fs - wrapper around _iec_getc_fs to disable timer interrupt
+ *
+ * This function wraps iec_getc_fs to disable timer interrupt there and
+ * is completely inlined by the compiler. It could be inlined in the
+ * C code too, but is kept seperately for clarity.
+ */
+static int16_t iec_getc_fs(void) {
+  int16_t val;
+  timer_disable();        // Disable 100Hz tick timer
+  val = _iec_getc_fs();
+  timer_enable();         // Enable 100Hz tick timer
+  return val;
+}
+
+/**
+ * iec_putc_fs - send a byte over the serial bus, fast serial mode
+ * @data    : byte to be sent
+ * @with_eoi: Flags if the byte should be send with an EOI condition
+ *
+ * This function sends the byte data over the fast serial bus, optionally including
+ * a marker for the EOI condition. Returns 0 normally or -1 if the bus state has
+ * changed, the caller should return to the main loop in that case.
+ */
+static uint8_t iec_putc_fs(uint8_t data, const uint8_t with_eoi) {
+  uint8_t i;
+
+  if (iec_check_atn()) return -1;           // $81F7
+
+  i = iec_debounced();
+
+  delay_us(60); // Fudged delay
+  set_clock(1);                             // $8200
+
+  if (i & IEC_BIT_DATA) {                   // $8204
+    /* The 1571 jumps to $8218 at this point, but I think           */
+    /* this is not necessary - the following loop will fall through */
+  }
+
+  do {
+    if (iec_check_atn()) return -1;                   // $8206
+  } while (!(iec_debounced() & IEC_BIT_DATA));
+
+  if (with_eoi || (i & IEC_BIT_DATA)) {
+    do {
+      if (iec_check_atn()) return -1;                 // $8218
+    } while (!(iec_debounced() & IEC_BIT_DATA));
+
+    do {
+      if (iec_check_atn()) return -1;                 // $8222
+    } while (iec_debounced() & IEC_BIT_DATA);
+  }
+
+  set_clock(0);                                       // $822C
+  delay_us(40); // estimated
+  do {
+    if (iec_check_atn()) return -1;
+  } while (!(iec_debounced() & IEC_BIT_DATA));        // $8237
+  delay_us(21); // calculated - $xxxx (best case after bus read) - $xxxx
+
+  if (!(iec_debounced() & IEC_BIT_DATA)) {
+    iec_data.bus_state = BUS_CLEANUP;
+    return -1;
+  }
+
+  ATOMIC_BLOCK( ATOMIC_FORCEON ) {
+    fastser_sendbyte(data);             // $823D
+  }
+
+  set_data(1);      // $825F
+  //set_clock(0);     // Clock is pulled low earlier
+  delay_us(14);     // Settle time, approximate
+
+  do {
+    if (iec_check_atn()) return -1;
+  } while (iec_debounced() & IEC_BIT_DATA);           // $82B2
+
+  /* More stuff that's not in the original rom:
+   *   Wait for 250us or until DATA is high or ATN is low.
+   * This fixes a problem with Castle Wolfenstein.
+   * Bus traces seem to indicate that a real 1541 needs
+   * about 350us between two bytes, sd2iec is usually WAY faster.
+   */
+  start_timeout(250);
+  while (!IEC_DATA && IEC_ATN && !has_timed_out()) ;
+
+  return 0;
+}
+
+/**
+ * Send a byte to fast serial with burst handshake, $9228:
+ * If ATN activated, return 1 else return 0
+ */
+uint8_t burst_handsk(uint8_t value) {
+  iec_bus_t bus;
+  do {
+    bus = iec_debounced();
+    if (!(bus & IEC_BIT_ATN)) {
+      (void) iec_check_atn();
+      return 1;
+    }
+  } while ((bus & IEC_BIT_CLOCK) == clklinesave);
+  clklinesave = bus & IEC_BIT_CLOCK;
+  ATOMIC_BLOCK( ATOMIC_FORCEON ) {
+    fastser_sendbyte(value);
+  }
+  return 0;
+}
+
+/**
+ * Send memory block to host by burst mode:
+ * If ATN activated, break and return 1 else return 0
+ */
+uint8_t burst_sendblock(uint8_t *ptr, uint8_t len) {
+  do {
+    if (burst_handsk(*(ptr++))) return 1;
+  } while (--len != 0);
+  return 0;
+}
+#endif        // CONFIG_FASTSERIAL_MODE >= 2
+
+
 /* ------------------------------------------------------------------------- */
 /*  Listen+Talk-Handling                                                     */
 /* ------------------------------------------------------------------------- */
@@ -347,6 +576,10 @@ static uint8_t iec_listen_handler(const uint8_t cmd) {
     } else {
       if (iec_data.iecflags & DOLPHIN_ACTIVE)
         c = dolphin_getc();
+#if CONFIG_FASTSERIAL_MODE >= 2
+      else if (iec_data.iecflags & FASTSER_ACTIVE)
+        c = iec_getc_fs();
+#endif
       else
         c = iec_getc();
     }
@@ -457,6 +690,10 @@ static uint8_t iec_talk_handler(uint8_t cmd) {
           /* Send with EOI */
           if (iec_data.iecflags & DOLPHIN_ACTIVE)
             res = dolphin_putc(buf->data[buf->position], 1);
+#if CONFIG_FASTSERIAL_MODE >= 2
+          else if (iec_data.iecflags & FASTSER_ACTIVE)
+            res = iec_putc_fs(buf->data[buf->position], 1);
+#endif
           else
             res = iec_putc(buf->data[buf->position], 1);
 
@@ -475,6 +712,10 @@ static uint8_t iec_talk_handler(uint8_t cmd) {
           /* Send without EOI */
           if (iec_data.iecflags & DOLPHIN_ACTIVE)
             res = dolphin_putc(buf->data[buf->position], 0);
+#if CONFIG_FASTSERIAL_MODE >= 2
+          else if (iec_data.iecflags & FASTSER_ACTIVE)
+            res = iec_putc_fs(buf->data[buf->position], 0);
+#endif
           else
             res = iec_putc(buf->data[buf->position], 0);
 
@@ -499,6 +740,17 @@ static uint8_t iec_talk_handler(uint8_t cmd) {
       return 1;
     }
 
+    /* BUG (?) in error channel handling: After sending the last BYTE (with EOI), the sending cycle is
+       not completed. But the host's KERNAL cuts off communication, which it usually succeeds in
+       doing, so you can't see the error. In some rare cases, however, this fails and the communication
+       falls apart. (Maybe only ARM targets + C128 combination are affected?) As a dirty workaround,
+       the 'refill' function of the error channel ("set_ok_message()" in "errormsg.c") may return an
+       error flag. The result is good, but then the function ends on the "error branch". Perhaps the
+       following test + end is logically better in this case. (Apparently, this bug is also found in
+       IEEE-488 "ieee_talk_handler()" routine.) / balagesz */
+    //if ((cmd & 0x0f) == 0x0f) return 0;         // BUGfix: if error channel is handled, talk handler is ready
+    /* 240309: This bugfix was (temporary?) removed, see below. */
+
     /* Search the buffer again, it can change when using large buffers */
     buf = find_buffer(cmd & 0x0f);
 
@@ -519,6 +771,17 @@ static uint8_t iec_talk_handler(uint8_t cmd) {
       /*        if it hits a badline at the worst possible moment       */
       delay_us(50);
     }
+    /* 240309: The above bugfix resolves the error in the "error channel" handling,
+       but the lack of exit also causes errors in other cases, for example when
+       channel's direct reading. However... This seems to be how the original
+       DOS works... (?) The next fix waits until the host KERNAL "flips" the
+       lines to transmit after receiving the EOI. So the 'untalk' might always
+       cut off the sending routine in the same place. This wait seems to fix both
+       bugs, so the above fix has been removed for now. (The talk-handler (and
+       listen-handler; also does not finish normally) is rather chaotic, and may
+       need to be rethought in the future. Or not.) / balagesz */
+    else if (buf->sendeoi)
+      delay_us(200);    // BugFix: during this time, the host KERNAL will finish switching the bus to transmit state
   }
 
   return 0;
@@ -535,6 +798,8 @@ void iec_init(void) {
   /* Keep DATA low if there is already a request on the bus */
   if (!IEC_ATN)
     set_data(0);
+  else
+    set_data(1);
 
   /* Prepare IEC interrupts */
   iec_interrupts_init();
@@ -552,6 +817,13 @@ void iec_mainloop(void) {
   set_error(ERROR_DOSVERSION);
 
   iec_data.bus_state = BUS_IDLE;
+
+#ifdef CONFIG_PARALLEL_DOLPHIN
+  parallel_configure();
+#endif
+#if CONFIG_FASTSERIAL_MODE >= 2
+  fastser_configure();          // Enable or Disable FastSerial receiver
+#endif
 
   while (1) {
     switch (iec_data.bus_state) {
@@ -603,7 +875,12 @@ void iec_mainloop(void) {
 
       iec_data.device_state = DEVICE_IDLE;
       iec_data.bus_state    = BUS_ATNACTIVE;
-      iec_data.iecflags &= (uint8_t)~(EOI_RECVD | JIFFY_ACTIVE | JIFFY_LOAD);
+      iec_data.iecflags &= (uint8_t)~(EOI_RECVD | JIFFY_ACTIVE | JIFFY_LOAD | FASTSER_ACTIVE);
+
+#if CONFIG_FASTSERIAL_MODE >= 2
+      if (fastser_recvbyte() >= 0)
+        iec_data.iecflags |= FASTSER_ACTIVE;        // If receive byte in fastserial from host, mode on
+#endif
 
       /* Slight protocol violation:                        */
       /*   Wait until clock is low or 250us have passed    */
@@ -637,10 +914,12 @@ void iec_mainloop(void) {
       if (cmd == 0x3f) { /* Unlisten */
         if (iec_data.device_state == DEVICE_LISTEN)
           iec_data.device_state = DEVICE_IDLE;
+        iec_data.iecflags &= ~FASTSER_ACTIVE;    // 1571 DOS: $8101
         iec_data.bus_state = BUS_ATNFINISH;
       } else if (cmd == 0x5f) { /* Untalk */
         if (iec_data.device_state == DEVICE_TALK)
           iec_data.device_state = DEVICE_IDLE;
+        iec_data.iecflags &= ~FASTSER_ACTIVE;    // 1571 DOS: $8111
         iec_data.bus_state = BUS_ATNFINISH;
       } else if (cmd == 0x40+device_address) { /* Talk */
         iec_data.device_state = DEVICE_TALK;
@@ -736,6 +1015,15 @@ void iec_mainloop(void) {
       set_atn_irq(1);
 
       if (iec_data.device_state == DEVICE_LISTEN) {
+#if CONFIG_FASTSERIAL_MODE >= 2
+        if (iec_data.iecflags & FASTSER_ACTIVE) {         // 1571 DOS: $816A
+          do {                                            // 1571 DOS: $8199 reqfst
+            if (iec_check_atn()) break;
+          } while (!(iec_debounced() & IEC_BIT_CLOCK));   // Wait for CLK high
+          if (iec_check_atn()) break;
+          fastser_sendbyte(0x00);                         // Ack FS capability to host
+        }
+#endif
         if (iec_listen_handler(cmd))
           break;
       } else if (iec_data.device_state == DEVICE_TALK) {

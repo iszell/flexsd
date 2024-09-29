@@ -1,5 +1,5 @@
 /* sd2iec - SD/MMC to Commodore serial bus interface/controller
-   Copyright (C) 2007-2017  Ingo Korb <ingo@akana.de>
+   Copyright (C) 2007-2022  Ingo Korb <ingo@akana.de>
 
    Inspired by MMC2IEC by Lars Pontoppidan et al.
 
@@ -36,86 +36,108 @@
 #define DEBOUNCE_TICKS 4
 #define SLEEP_TICKS    2*HZ
 
+volatile uint8_t timeritlock = 0;
+
 volatile tick_t ticks;
 // Logical buttons
 volatile uint8_t active_keys;
 
 // Physical buttons
-rawbutton_t buttonstate;
+volatile rawbutton_t buttonstate;
 tick_t      lastbuttonchange;
 
 /* Called by the timer interrupt when the button state has changed */
-static void buttons_changed(void) {
+static void buttons_changed(rawbutton_t actbuttons) {
+  rawbutton_t oldstate = buttonstate;
   /* Check if the previous state was stable for two ticks */
   if (time_after(ticks, lastbuttonchange + DEBOUNCE_TICKS)) {
     if (active_keys & IGNORE_KEYS) {
       active_keys &= ~IGNORE_KEYS;
     } else if (BUTTON_PREV && /* match only if PREV exists */
-               !(buttonstate & (BUTTON_PREV|BUTTON_NEXT))) {
+               !(oldstate & (BUTTON_PREV|BUTTON_NEXT))) {
       /* Both buttons held down */
         active_keys |= KEY_HOME;
-    } else if (!(buttonstate & BUTTON_NEXT) &&
-               (buttons_read() & BUTTON_NEXT)) {
+    } else if (!(oldstate & BUTTON_NEXT) &&
+               (actbuttons & BUTTON_NEXT)) {
       /* "Next" button released */
       active_keys |= KEY_NEXT;
     } else if (BUTTON_PREV && /* match only if PREV exists */
-               !(buttonstate & BUTTON_PREV) &&
-               (buttons_read() & BUTTON_NEXT)) {
+               !(oldstate & BUTTON_PREV) &&
+               (actbuttons & BUTTON_NEXT)) {
       active_keys |= KEY_PREV;
     }
   }
 
   lastbuttonchange = ticks;
-  buttonstate = buttons_read();
+  buttonstate = actbuttons;
 }
 
 /* The main timer interrupt */
 SYSTEM_TICK_HANDLER {
-  ticks++;
+
+  /* This interrupt is nested (due to IT of the fast serial SRQ receiver).
+   * For this reason, in special cases, it can also interrupt itself.
+   * Therefore it starts with a simple locking mechanism: if it is
+   * running, it will not start again. */
+
+  register uint8_t l;
+  ATOMIC_BLOCK(ATOMIC_FORCEON) {
+    l = timeritlock;
+    timeritlock = 0;        // Locking attempt
+  }
+  if (l) {                  // If not already locked (not running), go!
+
+    ticks++;
 
 #ifdef CONFIG_VCPUSUPPORT
-  if (emucalled != 0) return;
+    if (emucalled == 0) {
 #endif
 
-  rawbutton_t tmp = buttons_read();
+      rawbutton_t tmp = buttons_read();
 
-  if (tmp != buttonstate) {
-    buttons_changed();
-  }
+      if (tmp != buttonstate) {
+        buttons_changed(tmp);
+      }
 
 #ifdef SINGLE_LED
-  if (led_state & LED_ERROR) {
-    if ((ticks & 15) == 0)
-      toggle_led();
-  } else {
-    set_led((led_state & LED_BUSY) || (led_state & LED_DIRTY));
-  }
+      if (led_state & LED_ERROR) {
+        if ((ticks & 15) == 0)
+          toggle_led();
+      } else {
+        set_led((led_state & LED_BUSY) || (led_state & LED_DIRTY));
+      }
 #else
-  if (led_state & LED_ERROR)
-    if ((ticks & 15) == 0)
-      toggle_dirty_led();
+      if (led_state & LED_ERROR)
+        if ((ticks & 15) == 0)
+          toggle_dirty_led();
 #endif
 
-  /* Sleep button triggers when held down for 2sec */
-  if (time_after(ticks, lastbuttonchange + DEBOUNCE_TICKS)) {
-    if (!(buttonstate & BUTTON_NEXT) &&
-        (!BUTTON_PREV || (buttonstate & BUTTON_PREV)) &&
-        time_after(ticks, lastbuttonchange + SLEEP_TICKS) &&
-        !key_pressed(KEY_SLEEP)) {
-      /* Set ignore flag so the release doesn't trigger KEY_NEXT */
-      active_keys |= KEY_SLEEP | IGNORE_KEYS;
-      /* Avoid triggering for the next two seconds */
-      lastbuttonchange = ticks;
-    }
-  }
+      /* Sleep button triggers when held down for 2sec */
+      if (time_after(ticks, lastbuttonchange + DEBOUNCE_TICKS)) {
+        tmp = buttonstate;
+        if (!(tmp & BUTTON_NEXT) &&
+            (!BUTTON_PREV || (tmp & BUTTON_PREV)) &&
+            time_after(ticks, lastbuttonchange + SLEEP_TICKS) &&
+            !key_pressed(KEY_SLEEP)) {
+          /* Set ignore flag so the release doesn't trigger KEY_NEXT */
+          active_keys |= KEY_SLEEP | IGNORE_KEYS;
+          /* Avoid triggering for the next two seconds */
+          lastbuttonchange = ticks;
+        }
+      }
 
-  /* send tick to the software RTC emulation */
-  softrtc_tick();
+      /* send tick to the software RTC emulation */
+      softrtc_tick();
 
 #ifdef CONFIG_REMOTE_DISPLAY
-  /* Check if the display wants to be queried */
-  if (display_intrq_active()) {
-    active_keys |= KEY_DISPLAY;
-  }
+      /* Check if the display wants to be queried */
+      if (display_intrq_active()) {
+        active_keys |= KEY_DISPLAY;
+      }
 #endif
+#ifdef CONFIG_VCPUSUPPORT
+    }
+#endif
+  }
+  timeritlock = 1;          // Unlock anyway (timer IT can only interrupt itself once "by design")
 }
